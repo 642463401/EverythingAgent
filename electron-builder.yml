@@ -1,0 +1,36 @@
+appId: com.everythingagent.app
+productName: EverythingAgent
+copyright: Copyright © 2026 EverythingAgent
+
+directories:
+  buildResources: build
+  output: release
+
+files:
+  - dist
+  - dist-electron
+
+extraResources:
+  - from: resources/everything
+    to: everything
+    filter:
+      - "**/*"
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: build/icon.ico
+  artifactName: ${productName}-${version}-Setup.${ext}
+  signAndEditExecutable: false
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: EverythingAgent
+  runAfterFinish: true
+
+asar: true
