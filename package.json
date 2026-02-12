@@ -15,6 +15,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.26.0",
     "@radix-ui/react-dialog": "^1.1.6",
     "@radix-ui/react-label": "^2.1.2",
     "@radix-ui/react-scroll-area": "^1.2.3",
@@ -27,9 +28,14 @@
     "clsx": "^2.1.1",
     "electron-store": "^10.0.0",
     "framer-motion": "^12.4.0",
+    "highlight.js": "^11.11.1",
     "lucide-react": "^0.474.0",
+    "pdfjs-dist": "^4.10.38",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "react-markdown": "^10.1.0",
+    "rehype-highlight": "^7.0.2",
+    "remark-gfm": "^4.0.1",
     "tailwind-merge": "^3.0.0",
     "uuid": "^11.1.0"
   },

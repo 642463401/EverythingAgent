@@ -2,6 +2,9 @@
 @tailwind components;
 @tailwind utilities;
 
+/* highlight.js dark theme for code blocks */
+@import 'highlight.js/styles/github-dark.css';
+
 @layer base {
   :root {
     --background: 0 0% 7%;
@@ -74,4 +77,36 @@
   .no-drag {
     -webkit-app-region: no-drag;
   }
+}
+
+/* Markdown body styles for chat messages */
+.markdown-body {
+  font-size: 13.5px;
+  line-height: 1.6;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+.markdown-body pre {
+  margin: 0;
+  border-radius: 0 0 0.5rem 0.5rem;
+}
+
+.markdown-body pre code {
+  font-size: 12px;
+  line-height: 1.5;
+  font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', Consolas, monospace;
+}
+
+.markdown-body code.hljs {
+  background: transparent;
+  padding: 0;
+}
+
+.markdown-body > *:first-child {
+  margin-top: 0;
+}
+
+.markdown-body > *:last-child {
+  margin-bottom: 0;
 }

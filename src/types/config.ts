@@ -20,6 +20,8 @@ export interface AppSettings {
   language: 'zh-CN' | 'en-US'
   projectsPath: string
   metasoApiKey: string  // 秘塔 AI 搜索 API Key
+  dashscopeApiKey: string  // DashScope API Key (MCP 服务)
+  enabledMcpServices: string[]  // 用户启用的 MCP 服务 ID 列表
 }
 
 /** Full application config stored in electron-store */

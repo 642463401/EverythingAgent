@@ -11,6 +11,18 @@ import {
 } from '@/components/ui/select'
 import { useSettings } from '@/hooks/useElectron'
 
+/** Preset MCP services (must match IDs in electron/tools/mcpService.ts) */
+const MCP_SERVICE_PRESETS = [
+  { id: 'weather', name: '墨迹天气查询', description: '实时天气、天气预报', icon: '🌤️' },
+  { id: 'railway', name: '12306火车票查询', description: '车次、余票、价格', icon: '🚄' },
+  { id: 'code-interpreter', name: '代码解释器', description: '在线代码执行', icon: '💻' },
+  { id: 'aviation', name: '飞常准机票查询', description: '航班、机票信息', icon: '✈️' },
+  { id: 'doc-convert', name: 'md转文档', description: 'Markdown 转 Word/PDF 等格式', icon: '📄' },
+  { id: 'amap', name: '高德地图', description: '地图、导航、POI搜索', icon: '🗺️' },
+  { id: 'ai-ocr', name: 'AIOCR', description: '多格式文档识别，支持PDF/Office/图片等', icon: '🔍' },
+  { id: 'how-to-cook', name: '今天吃什么', description: '菜谱查询、做法推荐', icon: '🍳' },
+]
+
 export function GeneralSettings() {
   const { settings, saveSettings } = useSettings()
 
@@ -143,6 +155,75 @@ export function GeneralSettings() {
               秘塔 AI 搜索支持网页、学术、文库、图片、视频、播客多维搜索。
               AI 会在需要实时信息时自动调用联网搜索。
             </p>
+          </div>
+        </div>
+      </div>
+
+      {/* MCP Services Section */}
+      <div>
+        <h3 className="text-[13.5px] font-semibold text-foreground mb-3">MCP 扩展服务</h3>
+        <div className="space-y-4">
+          <div className="space-y-1.5">
+            <div>
+              <Label className="text-[12.5px]">DashScope API Key</Label>
+              <p className="text-[11px] text-muted-foreground/60 mt-0.5">
+                配置 API Key 后，开启下方需要的 MCP 服务即可使用。
+                <a
+                  href="#"
+                  onClick={(e) => {
+                    e.preventDefault()
+                    window.electronAPI?.openExternal?.('https://dashscope.console.aliyun.com/apiKey')
+                  }}
+                  className="text-blue-400 hover:text-blue-300 ml-1"
+                >
+                  获取 API Key
+                </a>
+              </p>
+            </div>
+            <Input
+              type="password"
+              value={settings.dashscopeApiKey || ''}
+              onChange={(e) => handleChange('dashscopeApiKey', e.target.value)}
+              className="h-8 text-[12.5px] font-mono bg-white/[0.03]"
+              placeholder="输入 DashScope API Key"
+            />
+          </div>
+
+          {/* MCP Service Toggles */}
+          <div className="rounded-lg bg-white/[0.03] border border-white/[0.06] p-3 space-y-2.5">
+            <p className="text-[11.5px] font-medium text-muted-foreground/80 mb-2">
+              选择启用的 MCP 服务：
+            </p>
+            {MCP_SERVICE_PRESETS.map((svc) => {
+              const enabled = (settings.enabledMcpServices || []).includes(svc.id)
+              return (
+                <div key={svc.id} className="flex items-center justify-between py-0.5">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-[13px] shrink-0">{svc.icon}</span>
+                    <div className="min-w-0">
+                      <span className="text-[12px] text-foreground/90">{svc.name}</span>
+                      <span className="text-[10.5px] text-muted-foreground/50 ml-1.5">{svc.description}</span>
+                    </div>
+                  </div>
+                  <Switch
+                    checked={enabled}
+                    disabled={!settings.dashscopeApiKey}
+                    onCheckedChange={(checked) => {
+                      const current = settings.enabledMcpServices || []
+                      const next = checked
+                        ? [...current, svc.id]
+                        : current.filter((id: string) => id !== svc.id)
+                      handleChange('enabledMcpServices', next)
+                    }}
+                  />
+                </div>
+              )
+            })}
+            {!settings.dashscopeApiKey && (
+              <p className="text-[10.5px] text-amber-400/70 mt-1">
+                请先配置 DashScope API Key 后再启用服务
+              </p>
+            )}
           </div>
         </div>
       </div>

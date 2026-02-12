@@ -8,6 +8,10 @@ import { searchEverything } from './everythingSearch'
 import { webSearch, webReader, isWebSearchAvailable } from './webSearch'
 import { readFile, writeFile, listDirectory, analyzeData } from './fileTools'
 import { runCommand } from './commandRunner'
+import { fileManage, openApplication, openFile, desktopControl } from './fileManager'
+import { createDocument } from './documentGenerator'
+import { mcpService } from './mcpService'
+import { lookupCity } from './cityLookup'
 import type { ModelConfig } from '../../src/types/config'
 
 export interface ChatRequestMessage {
@@ -29,6 +33,19 @@ interface AccumulatedToolCall {
   arguments: string
 }
 
+interface SubTask {
+  id: number
+  title: string
+  status: 'pending' | 'in_progress' | 'completed' | 'skipped'
+  result?: string
+}
+
+interface TaskPlan {
+  goal: string
+  subtasks: SubTask[]
+  currentSubtaskId: number | null
+}
+
 const activeRequests = new Map<string, AbortController>()
 
 const SYSTEM_PROMPT = `你是 EverythingAgent，一个强大的 Windows 桌面 AI 助手，同时也是一个自主编码代理（Auto-Coder）。
@@ -38,21 +55,32 @@ const SYSTEM_PROMPT = `你是 EverythingAgent，一个强大的 Windows 桌面 A
 2. 使用 everything_search 工具在用户电脑上快速搜索本地文件和文件夹
 3. 使用 web_search 工具联网搜索实时信息（新闻、技术文档、百科知识等）
 4. 使用 web_reader 工具读取和提取网页内容（获取文章全文、页面详情等）
-5. 使用 read_file 工具读取本地文件内容（代码、文本、配置文件等）
+5. 使用 read_file 工具读取本地文件内容（代码、文本、配置文件、PDF 等）
 6. 使用 write_file 工具创建或写入文件（生成报告、保存内容、创建代码文件等）
 7. 使用 list_directory 工具列出目录下的文件和文件夹
 8. 使用 analyze_data 工具分析数据文件（CSV、JSON），获取统计信息和数据预览
 9. 使用 run_command 工具在用户电脑上执行系统命令（运行代码、安装依赖、执行构建、git 操作等）
 10. 帮助用户理解和管理他们的文件
+11. 使用 file_manage 工具管理文件（复制、移动、重命名、删除文件或文件夹）
+12. 使用 open_application 工具打开应用程序（通过名称打开任何已安装的应用）
+13. 使用 open_file 工具用默认或指定程序打开文件
+14. 使用 desktop_control 工具控制桌面显示（隐藏/显示桌面图标）
+15. 使用 create_document 工具生成各类文档（Word、Excel、PPT、PDF、Markdown）
+16. 使用 task_progress 工具管理复杂任务的进度（分解子任务、跟踪完成状态）
 
 工具使用策略：
 - 当用户要求查找文件时，使用 everything_search（全盘快速搜索）或 list_directory（浏览特定目录）。
 - 当用户需要查询实时信息时，使用 web_search 联网搜索。
 - 当用户提供 URL 并要求查看内容时，使用 web_reader 读取网页。
-- 当用户要求读取/查看某个文件内容时，使用 read_file。
+- 当用户要求读取/查看某个文件内容时，使用 read_file。支持 PDF 文件自动提取文本。对于图片、音视频等二进制文件，read_file 无法读取，请告知用户。
 - 当用户要求创建纯文本文件（.md/.txt/.csv/.json/.py/.js等）时，使用 write_file。
 - 当用户要求分析数据（CSV/JSON）时，使用 analyze_data 获取统计摘要和预览，然后给出分析结论。
 - 当用户要求运行代码、安装依赖、执行构建、git操作或任何命令行任务时，使用 run_command。
+- 当用户要求复制、移动、重命名、删除文件或创建文件夹时，使用 file_manage。
+- 当用户要求打开某个应用程序时，使用 open_application（支持中英文应用名，如"打开微信"、"打开Chrome"）。
+- 当用户要求打开某个文件时，使用 open_file（用默认程序或指定程序打开）。
+- 当用户要求隐藏/显示桌面图标时，使用 desktop_control。
+- 当用户要求生成文档（Word/PPT/Excel/PDF）时，使用 create_document。该工具会自动处理 Python 环境检测、库安装和降级为 Markdown。
 - 可以组合使用工具：先搜索文件 → 读取内容 → 分析数据 → 写入报告。
 - 搜索结果请以简洁清晰的格式展示，并标注来源。
 - 写文件前请确认路径和内容，写入后告知用户完整路径。
@@ -67,26 +95,42 @@ Auto-Coder 自主编码工作流：
 5. 如果出错，读取错误信息，修改代码，再次运行，循环直到成功。
 run_command 适用场景：运行 Python/Node.js/Java 等代码、pip install / npm install 安装依赖、git 操作、编译构建、运行测试、查看环境信息（python --version 等）。
 
-Office 文档生成策略（带回退机制）：
-当用户要求创建 .docx、.xlsx、.pptx 等 Office 格式文档时，按以下流程操作：
-第一步：检测 Python 环境
-- 用 run_command 执行 python --version（如果失败再试 python3 --version）。
-- 如果 Python 不可用，直接跳到回退方案。
-第二步：尝试用 Python 脚本生成
-- 用 write_file 写一个 Python 脚本（如 generate_doc.py），使用对应的库：
-  - .docx 文档：使用 python-docx 库
-  - .xlsx 表格：使用 openpyxl 库
-  - .pptx 演示文稿：使用 python-pptx 库
-- 用 run_command 安装所需库：pip install python-docx openpyxl python-pptx（如果 pip 失败，跳到回退方案）
-- 用 run_command 执行脚本：python generate_doc.py
-- 如果脚本执行成功（exitCode 为 0），告知用户文件路径，删除临时脚本。
-- 如果脚本执行失败，跳到回退方案。
-回退方案：
-- 当 Python 不可用、pip 安装失败或脚本执行失败时，改为使用 write_file 创建 .md 格式文档。
-- 将原始文件扩展名从 .docx/.xlsx/.pptx 改为 .md。
-- 用 Markdown 格式组织内容（标题用 #，表格用 | 分隔，列表用 -）。
-- 告知用户：由于系统未安装 Python 环境（或库安装/脚本执行失败），已自动生成 Markdown 格式文档，可用任意文本编辑器或 Markdown 阅读器打开。
-如果用户只需要简单的纯文本报告，直接使用 write_file 创建 .md 文件即可，无需尝试 Python。`
+任务规划与进度管理：
+当用户请求涉及多个步骤的复杂任务时（如"分析整个项目"、"读取所有代码文件"、"生成完整报告"），你必须：
+1. 先使用 task_progress 工具的 create_plan 操作，将任务分解为 3-10 个可独立执行的子任务。
+2. 每开始一个子任务时，调用 update_status 将其标记为 in_progress。
+3. 每完成一个子任务时，调用 update_status 将其标记为 completed，并附上简要结果描述（<100字）。
+4. 如果某个子任务不再需要，标记为 skipped。
+
+上下文管理注意事项：
+- 你的上下文窗口有限，之前轮次的工具结果可能已被压缩或截断。
+- 读取大文件时，关注关键信息并在 task_progress 的 result 中记录要点，而不是依赖原始内容在后续步骤中仍然可用。
+- 每个子任务应尽量自包含：完成后记录要点摘要，后续步骤可以依赖摘要而非原始数据。
+- 如果任务超出你的处理能力，诚实告知用户并建议拆分为多次对话。
+
+你可以根据用户的需求自动切换为以下专家模式，在回复开头用 [模式名] 标注当前模式：
+
+【生活助手】当用户询问衣食住行、生活建议、推荐、天气、美食、旅行等日常问题时：
+- 提供实用、具体的建议
+- 结合 web_search 查找最新信息和推荐
+- 用友好亲切的语调回复
+
+【工作助手】当用户需要文档编写、数据分析、报告生成、会议总结等工作任务时：
+- 使用 create_document 生成专业文档（Word/PPT/Excel/PDF）
+- 使用 analyze_data 分析数据并给出结论
+- 用专业严谨的语调回复
+
+【编程助手】当用户需要代码编写、调试、技术问题解答、项目开发时：
+- 遵循 Auto-Coder 工作流（浏览→读取→编写→运行→修复）
+- 代码简洁规范，附带必要注释
+- 用技术精确的语调回复
+
+【文件管家】当用户需要文件管理、应用操作、桌面控制等系统操作时：
+- 使用 file_manage、open_application、open_file、desktop_control 等工具
+- 操作前简要确认意图，操作后报告结果
+- 用高效直接的语调回复
+
+当任务跨越多个领域时（如"分析这个CSV然后生成PPT报告"），灵活组合多个模式的能力来完成。`
 
 function buildTools() {
   const tools: any[] = [
@@ -174,7 +218,7 @@ function buildTools() {
     type: 'function' as const,
     function: {
       name: 'read_file',
-      description: '读取本地文件的内容。支持文本文件、代码文件、配置文件、CSV、JSON 等。返回文件内容、大小和行数。最大支持 512KB。',
+      description: '读取本地文件的内容。支持文本文件、代码文件、配置文件、CSV、JSON 等，也支持 PDF 文件（自动提取文本内容）。文本文件最大支持 512KB，PDF 最大支持 20MB。注意：不支持读取图片、音视频、压缩包等二进制文件。',
       parameters: {
         type: 'object',
         properties: {
@@ -192,7 +236,7 @@ function buildTools() {
     type: 'function' as const,
     function: {
       name: 'write_file',
-      description: '创建或写入文本文件。支持 .md/.txt/.csv/.json/.html/.py/.js 等文本格式。如需创建 Office 文档（.docx/.xlsx/.pptx），请编写 Python 脚本后用 run_command 执行。',
+      description: '创建或写入文本文件。支持 .md/.txt/.csv/.json/.html/.py/.js 等文本格式。如需创建 Office 文档（.docx/.xlsx/.pptx），请使用 create_document 工具。',
       parameters: {
         type: 'object',
         properties: {
@@ -273,6 +317,234 @@ function buildTools() {
     },
   })
 
+  // ==================== File Management Tools ====================
+  tools.push({
+    type: 'function' as const,
+    function: {
+      name: 'file_manage',
+      description: '管理文件和文件夹：复制、移动、重命名、删除、创建文件夹。删除操作会将文件移至回收站（安全）。',
+      parameters: {
+        type: 'object',
+        properties: {
+          operation: {
+            type: 'string',
+            enum: ['copy', 'move', 'rename', 'delete', 'create_folder'],
+            description: '操作类型：copy(复制), move(移动), rename(重命名), delete(删除到回收站), create_folder(创建文件夹)',
+          },
+          source: {
+            type: 'string',
+            description: '源文件/文件夹的绝对路径',
+          },
+          destination: {
+            type: 'string',
+            description: '目标路径（copy/move/rename 需要）。rename 时可以只提供新文件名。',
+          },
+        },
+        required: ['operation', 'source'],
+      },
+    },
+  })
+
+  tools.push({
+    type: 'function' as const,
+    function: {
+      name: 'open_application',
+      description: '通过名称打开已安装的应用程序。支持中英文应用名，如"微信"、"Chrome"、"VSCode"、"记事本"等。',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: {
+            type: 'string',
+            description: '应用名称（中文或英文），例如: "微信", "Chrome", "VSCode", "记事本", "Excel"',
+          },
+        },
+        required: ['name'],
+      },
+    },
+  })
+
+  tools.push({
+    type: 'function' as const,
+    function: {
+      name: 'open_file',
+      description: '用默认程序或指定程序打开文件。',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: {
+            type: 'string',
+            description: '文件的绝对路径',
+          },
+          application: {
+            type: 'string',
+            description: '（可选）指定用哪个程序打开，例如: "notepad", "code", "excel"',
+          },
+        },
+        required: ['path'],
+      },
+    },
+  })
+
+  tools.push({
+    type: 'function' as const,
+    function: {
+      name: 'desktop_control',
+      description: '控制 Windows 桌面图标的显示和隐藏。',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: {
+            type: 'string',
+            enum: ['hide_desktop_icons', 'show_desktop_icons', 'toggle_desktop_icons'],
+            description: '操作：hide_desktop_icons(隐藏), show_desktop_icons(显示), toggle_desktop_icons(切换)',
+          },
+        },
+        required: ['action'],
+      },
+    },
+  })
+
+  tools.push({
+    type: 'function' as const,
+    function: {
+      name: 'create_document',
+      description: '生成文档文件。支持 Word(.docx)、Excel(.xlsx)、PPT(.pptx)、PDF(.pdf)、Markdown(.md)。自动处理 Python 环境检测和库安装，如果 Python 不可用会自动降级为 Markdown 格式。',
+      parameters: {
+        type: 'object',
+        properties: {
+          type: {
+            type: 'string',
+            enum: ['docx', 'xlsx', 'pptx', 'pdf', 'md'],
+            description: '文档类型',
+          },
+          outputPath: {
+            type: 'string',
+            description: '输出文件的绝对路径，例如: "C:\\Users\\user\\Desktop\\报告.pptx"',
+          },
+          content: {
+            type: 'object',
+            description: '文档内容结构',
+            properties: {
+              title: {
+                type: 'string',
+                description: '文档标题',
+              },
+              sections: {
+                type: 'array',
+                description: '文档章节（用于 docx/md/pdf）',
+                items: {
+                  type: 'object',
+                  properties: {
+                    heading: { type: 'string', description: '章节标题' },
+                    content: { type: 'string', description: '章节内容' },
+                    level: { type: 'number', description: '标题级别（1-6），默认2' },
+                  },
+                  required: ['content'],
+                },
+              },
+              slides: {
+                type: 'array',
+                description: '幻灯片列表（用于 pptx）',
+                items: {
+                  type: 'object',
+                  properties: {
+                    title: { type: 'string', description: '幻灯片标题' },
+                    content: { type: 'string', description: '幻灯片内容' },
+                    layout: { type: 'string', enum: ['title', 'content', 'two_column', 'blank'], description: '布局类型' },
+                  },
+                  required: ['title', 'content'],
+                },
+              },
+              data: {
+                type: 'array',
+                description: '表格数据（用于 xlsx），每项为一行数据对象',
+                items: {
+                  type: 'object',
+                },
+              },
+              raw_content: {
+                type: 'string',
+                description: '原始文本内容（当不需要结构化时使用）',
+              },
+            },
+          },
+        },
+        required: ['type', 'outputPath', 'content'],
+      },
+    },
+  })
+
+  // ==================== Task Progress (context management) ====================
+  tools.push({
+    type: 'function' as const,
+    function: {
+      name: 'task_progress',
+      description: '任务进度管理工具。用于分解复杂任务、跟踪子任务进度。操作类型：create_plan(创建任务计划)、update_status(更新子任务状态)、get_progress(获取当前进度)。',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: {
+            type: 'string',
+            enum: ['create_plan', 'update_status', 'get_progress'],
+            description: '操作类型',
+          },
+          goal: {
+            type: 'string',
+            description: '(create_plan) 总体任务目标',
+          },
+          subtasks: {
+            type: 'array',
+            items: { type: 'string' },
+            description: '(create_plan) 子任务标题列表',
+          },
+          subtask_id: {
+            type: 'number',
+            description: '(update_status) 子任务序号（从1开始）',
+          },
+          status: {
+            type: 'string',
+            enum: ['in_progress', 'completed', 'skipped'],
+            description: '(update_status) 新状态',
+          },
+          result: {
+            type: 'string',
+            description: '(update_status) 子任务完成后的简要结果描述（建议<100字）',
+          },
+        },
+        required: ['action'],
+      },
+    },
+  })
+
+  // ==================== City Lookup (for weather MCP) ====================
+  tools.push({
+    type: 'function' as const,
+    function: {
+      name: 'city_lookup',
+      description: '查询城市ID。天气查询 MCP 工具需要城市ID（cityId）作为参数，使用此工具通过城市名称查找对应的城市ID。',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+            description: '城市名称，例如: "北京", "上海", "深圳", "杭州"',
+          },
+          maxResults: {
+            type: 'number',
+            description: '最大返回结果数，默认10',
+          },
+        },
+        required: ['query'],
+      },
+    },
+  })
+
+  // ==================== MCP Tools (dynamic, from connected MCP servers) ====================
+  if (mcpService.isDashScopeConfigured()) {
+    const mcpTools = mcpService.getToolDefinitions()
+    tools.push(...mcpTools)
+  }
+
   return tools
 }
 
@@ -289,6 +561,19 @@ function buildChatUrl(baseUrl: string): string {
   if (url.endsWith('/chat/completions')) return url
   if (url.endsWith('/v1')) return `${url}/chat/completions`
   return `${url}/chat/completions`
+}
+
+function buildMcpPromptSection(): string {
+  if (!mcpService.isDashScopeConfigured()) return ''
+  const mcpTools = mcpService.getToolDefinitions()
+  if (mcpTools.length === 0) return ''
+  return `\n\nMCP 扩展工具（已连接 ${mcpTools.length} 个工具）：
+- 天气查询：查询实时天气、天气预报。注意：天气查询需要城市ID，请先用 city_lookup 工具通过城市名称查找城市ID，再调用天气 MCP 工具。
+- 火车票查询：查询12306车次、余票、价格
+- 机票查询：查询航班信息、机票价格
+- 代码解释器：在线执行代码
+
+当用户需要查询天气、火车票、机票或执行代码时，优先使用对应的 MCP 工具。`
 }
 
 /**
@@ -311,7 +596,7 @@ async function streamOneRound(
       tools: buildTools(),
       stream: true,
       temperature: 0.7,
-      max_tokens: 4096,
+      max_tokens: 8192,
     }),
     signal,
   })
@@ -383,6 +668,73 @@ async function streamOneRound(
   return {
     content,
     toolCalls: [...toolCallMap.values()].filter((tc) => tc.id && tc.name),
+  }
+}
+
+/**
+ * Execute task_progress tool. Manages an in-memory task plan scoped to the current request.
+ */
+function executeTaskProgress(planRef: { current: TaskPlan | null }, argsJson: string): string {
+  try {
+    const args = JSON.parse(argsJson)
+
+    if (args.action === 'create_plan') {
+      if (!args.goal || !args.subtasks || args.subtasks.length === 0) {
+        return JSON.stringify({ error: '需要提供 goal 和 subtasks' })
+      }
+      planRef.current = {
+        goal: args.goal,
+        subtasks: args.subtasks.map((title: string, i: number) => ({
+          id: i + 1,
+          title,
+          status: 'pending' as const,
+        })),
+        currentSubtaskId: null,
+      }
+      return JSON.stringify({
+        success: true,
+        message: `已创建任务计划: ${args.goal}`,
+        totalSubtasks: args.subtasks.length,
+        subtasks: planRef.current.subtasks,
+      })
+    }
+
+    if (args.action === 'update_status') {
+      if (!planRef.current) {
+        return JSON.stringify({ error: '尚未创建任务计划，请先使用 create_plan' })
+      }
+      const subtask = planRef.current.subtasks.find((t) => t.id === args.subtask_id)
+      if (!subtask) {
+        return JSON.stringify({ error: `未找到子任务 #${args.subtask_id}` })
+      }
+      subtask.status = args.status
+      if (args.result) subtask.result = args.result
+      if (args.status === 'in_progress') planRef.current.currentSubtaskId = subtask.id
+
+      const completed = planRef.current.subtasks.filter((t) => t.status === 'completed').length
+      const total = planRef.current.subtasks.length
+      return JSON.stringify({
+        success: true,
+        progress: `${completed}/${total}`,
+        subtask: { id: subtask.id, title: subtask.title, status: subtask.status },
+      })
+    }
+
+    if (args.action === 'get_progress') {
+      if (!planRef.current) {
+        return JSON.stringify({ message: '无活跃任务计划' })
+      }
+      const completed = planRef.current.subtasks.filter((t) => t.status === 'completed').length
+      return JSON.stringify({
+        goal: planRef.current.goal,
+        progress: `${completed}/${planRef.current.subtasks.length}`,
+        subtasks: planRef.current.subtasks,
+      })
+    }
+
+    return JSON.stringify({ error: `未知操作: ${args.action}` })
+  } catch (err: any) {
+    return JSON.stringify({ error: err.message })
   }
 }
 
@@ -503,7 +855,185 @@ async function executeTool(name: string, argsJson: string): Promise<string> {
     }
   }
 
+  // ==================== New Tools ====================
+
+  if (name === 'file_manage') {
+    try {
+      const args = JSON.parse(argsJson)
+      console.log('[Tool] file_manage:', args.operation, args.source)
+      const result = await fileManage(args.operation || '', args.source || '', args.destination)
+      return result
+    } catch (err: any) {
+      console.error('[Tool] file_manage error:', err)
+      return JSON.stringify({ error: err.message })
+    }
+  }
+
+  if (name === 'open_application') {
+    try {
+      const args = JSON.parse(argsJson)
+      console.log('[Tool] open_application:', args.name)
+      const result = await openApplication(args.name || '')
+      return result
+    } catch (err: any) {
+      console.error('[Tool] open_application error:', err)
+      return JSON.stringify({ error: err.message })
+    }
+  }
+
+  if (name === 'open_file') {
+    try {
+      const args = JSON.parse(argsJson)
+      console.log('[Tool] open_file:', args.path)
+      const result = await openFile(args.path || '', args.application)
+      return result
+    } catch (err: any) {
+      console.error('[Tool] open_file error:', err)
+      return JSON.stringify({ error: err.message })
+    }
+  }
+
+  if (name === 'desktop_control') {
+    try {
+      const args = JSON.parse(argsJson)
+      console.log('[Tool] desktop_control:', args.action)
+      const result = await desktopControl(args.action || '')
+      return result
+    } catch (err: any) {
+      console.error('[Tool] desktop_control error:', err)
+      return JSON.stringify({ error: err.message })
+    }
+  }
+
+  if (name === 'create_document') {
+    try {
+      const args = JSON.parse(argsJson)
+      console.log('[Tool] create_document:', args.type, args.outputPath)
+      const result = await createDocument(args.type || '', args.outputPath || '', args.content || {})
+      return result
+    } catch (err: any) {
+      console.error('[Tool] create_document error:', err)
+      return JSON.stringify({ error: err.message })
+    }
+  }
+
+  if (name === 'city_lookup') {
+    try {
+      const args = JSON.parse(argsJson)
+      console.log('[Tool] city_lookup:', args.query)
+      const result = lookupCity(args.query || '', args.maxResults || 10)
+      return result
+    } catch (err: any) {
+      console.error('[Tool] city_lookup error:', err)
+      return JSON.stringify({ error: err.message })
+    }
+  }
+
+  // ==================== MCP Tools (dynamic routing) ====================
+  if (mcpService.isMcpTool(name)) {
+    try {
+      console.log('[Tool] MCP:', name, argsJson.slice(0, 200))
+      const result = await mcpService.executeTool(name, argsJson)
+      return result
+    } catch (err: any) {
+      console.error('[Tool] MCP error:', err)
+      return JSON.stringify({ error: `MCP工具调用失败: ${err.message}` })
+    }
+  }
+
   return JSON.stringify({ error: `Unknown tool: ${name}` })
+}
+
+// ==================== Context Compression ====================
+
+const COMPRESSION_THRESHOLD = 8
+const MAX_TOOL_RESULT_LENGTH = 500
+
+function compressToolResult(content: string): string {
+  if (content.length <= MAX_TOOL_RESULT_LENGTH) return content
+
+  try {
+    const parsed = JSON.parse(content)
+
+    // File read results: keep path/size/lines, truncate content
+    if (parsed.content && parsed.path && parsed.lines !== undefined) {
+      return JSON.stringify({
+        path: parsed.path,
+        size: parsed.size,
+        lines: parsed.lines,
+        content: parsed.content.slice(0, 200) + `\n... [已压缩，原始${parsed.lines}行/${parsed.size}字节]`,
+      })
+    }
+
+    // Search results: keep count + first few
+    if (parsed.results && Array.isArray(parsed.results)) {
+      return JSON.stringify({
+        count: parsed.count || parsed.results.length,
+        results: parsed.results.slice(0, 5),
+        compressed: true,
+      })
+    }
+
+    // Web reader results: truncate body
+    if (parsed.title && (parsed.content || parsed.text)) {
+      const text = parsed.content || parsed.text || ''
+      return JSON.stringify({
+        title: parsed.title,
+        url: parsed.url,
+        content: text.slice(0, 300) + `\n... [已压缩，原始${text.length}字符]`,
+      })
+    }
+
+    // Directory listing: keep first few items
+    if (parsed.items && Array.isArray(parsed.items)) {
+      return JSON.stringify({
+        path: parsed.path,
+        totalEntries: parsed.totalEntries,
+        items: parsed.items.slice(0, 10),
+        compressed: true,
+      })
+    }
+
+    // Command output: truncate stdout/stderr
+    if (parsed.stdout !== undefined || parsed.exitCode !== undefined) {
+      return JSON.stringify({
+        exitCode: parsed.exitCode,
+        stdout: (parsed.stdout || '').slice(0, 200) + (parsed.stdout?.length > 200 ? '... [已截断]' : ''),
+        stderr: parsed.stderr?.slice(0, 100),
+      })
+    }
+
+    // Generic: truncate JSON string
+    const str = JSON.stringify(parsed)
+    if (str.length > MAX_TOOL_RESULT_LENGTH) {
+      return str.slice(0, MAX_TOOL_RESULT_LENGTH) + '... [已压缩]'
+    }
+    return str
+  } catch {
+    return content.slice(0, MAX_TOOL_RESULT_LENGTH) + '... [已压缩]'
+  }
+}
+
+function compressMessages(messages: ChatRequestMessage[]): void {
+  if (messages.length <= COMPRESSION_THRESHOLD) return
+
+  // Find start of most recent tool-calling round (keep it uncompressed)
+  let lastToolRoundStart = -1
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'assistant' && messages[i].tool_calls) {
+      lastToolRoundStart = i
+      break
+    }
+  }
+
+  if (lastToolRoundStart <= 0) return
+
+  // Compress all tool messages before the most recent round
+  for (let i = 0; i < lastToolRoundStart; i++) {
+    if (messages[i].role === 'tool' && messages[i].content) {
+      messages[i].content = compressToolResult(messages[i].content!)
+    }
+  }
 }
 
 /**
@@ -530,17 +1060,44 @@ export async function sendChatStream(
     'Authorization': `Bearer ${model.apiKey}`,
   }
 
-  // Build messages with system prompt
+  // Build messages with system prompt + current timestamp
+  const now = new Date()
+  const timestamp = now.toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    weekday: 'long',
+    hour12: false,
+  })
+  const systemContent = `${SYSTEM_PROMPT}${buildMcpPromptSection()}\n\n当前时间: ${timestamp}`
   const messages: ChatRequestMessage[] = [
-    { role: 'system', content: SYSTEM_PROMPT },
+    { role: 'system', content: systemContent },
     ...userMessages,
   ]
 
   let fullContent = ''
 
   try {
-    // Tool calling loop (max 15 iterations — Auto-Coder needs more rounds for read→write→run→fix cycles)
-    for (let i = 0; i < 15; i++) {
+    // Lazily initialize MCP connections on first chat
+    if (mcpService.isDashScopeConfigured()) {
+      try {
+        await mcpService.initialize()
+      } catch (err: any) {
+        console.error('[MCP] Initialization error:', err.message)
+      }
+    }
+
+    // Task progress state scoped to this request
+    const taskPlanRef: { current: TaskPlan | null } = { current: null }
+
+    // Tool calling loop (max 30 iterations — supports long multi-step tasks with context compression)
+    for (let i = 0; i < 30; i++) {
+      // Compress old tool results before each round to free context space
+      compressMessages(messages)
+
       const { content, toolCalls } = await streamOneRound(
         url,
         headers,
@@ -573,25 +1130,52 @@ export async function sendChatStream(
         let queryDisplay = ''
         try {
           const args = JSON.parse(tc.arguments)
-          queryDisplay = args.query || args.command || args.path || args.url || args.q || tc.arguments
+          queryDisplay = args.query || args.command || args.path || args.url || args.name || args.operation || args.action || args.q || tc.arguments
         } catch {
           queryDisplay = tc.arguments
         }
 
         // Send status to UI
-        const isWebSearch = tc.name === 'web_search' || tc.name === 'metaso_search'
-        const isWebReader = tc.name === 'web_reader' || tc.name === 'metaso_reader'
-        const isFileRead = tc.name === 'read_file'
-        const isFileWrite = tc.name === 'write_file'
-        const isListDir = tc.name === 'list_directory'
-        const isAnalyze = tc.name === 'analyze_data'
-        const isRunCmd = tc.name === 'run_command'
-        const searchIcon = isRunCmd ? '⚡' : isFileWrite ? '✏️' : isAnalyze ? '📊' : isFileRead ? '📖' : isListDir ? '📁' : isWebReader ? '📄' : isWebSearch ? '🌐' : '🔍'
-        const searchLabel = isRunCmd ? '执行命令' : isFileWrite ? '写入文件' : isAnalyze ? '分析数据' : isFileRead ? '读取文件' : isListDir ? '浏览目录' : isWebReader ? '读取网页' : isWebSearch ? '联网搜索' : '本地搜索'
-        callbacks.onChunk(`\n${searchIcon} 正在${searchLabel}: "${queryDisplay}"...\n`)
-        fullContent += `\n${searchIcon} 正在${searchLabel}: "${queryDisplay}"...\n`
+        const toolMeta: Record<string, { icon: string; label: string }> = {
+          'everything_search': { icon: '🔍', label: '本地搜索' },
+          'web_search': { icon: '🌐', label: '联网搜索' },
+          'metaso_search': { icon: '🌐', label: '联网搜索' },
+          'web_reader': { icon: '📄', label: '读取网页' },
+          'metaso_reader': { icon: '📄', label: '读取网页' },
+          'read_file': { icon: '📖', label: '读取文件' },
+          'write_file': { icon: '✏️', label: '写入文件' },
+          'list_directory': { icon: '📁', label: '浏览目录' },
+          'analyze_data': { icon: '📊', label: '分析数据' },
+          'run_command': { icon: '⚡', label: '执行命令' },
+          'file_manage': { icon: '📦', label: '管理文件' },
+          'open_application': { icon: '🚀', label: '打开应用' },
+          'open_file': { icon: '📂', label: '打开文件' },
+          'desktop_control': { icon: '🖥️', label: '桌面控制' },
+          'create_document': { icon: '📝', label: '生成文档' },
+          'city_lookup': { icon: '🏙️', label: '查询城市' },
+          'task_progress': { icon: '📋', label: '任务进度' },
+          ...mcpService.getToolMeta(),
+        }
 
-        const result = await executeTool(tc.name, tc.arguments)
+        const meta = toolMeta[tc.name] || { icon: '🔧', label: tc.name }
+        callbacks.onChunk(`\n${meta.icon} 正在${meta.label}: "${queryDisplay}"...\n`)
+        fullContent += `\n${meta.icon} 正在${meta.label}: "${queryDisplay}"...\n`
+
+        let result: string
+        if (tc.name === 'task_progress') {
+          result = executeTaskProgress(taskPlanRef, tc.arguments)
+          // Send structured progress chunk to frontend
+          if (taskPlanRef.current) {
+            const p = taskPlanRef.current
+            const completed = p.subtasks.filter((t) => t.status === 'completed').length
+            const current = p.subtasks.find((t) => t.status === 'in_progress')
+            const progressChunk = `\n📋 任务进度: [${completed}/${p.subtasks.length}] ${current ? `正在执行: ${current.title}` : p.goal}...\n`
+            callbacks.onChunk(progressChunk)
+            fullContent += progressChunk
+          }
+        } else {
+          result = await executeTool(tc.name, tc.arguments)
+        }
 
         messages.push({
           role: 'tool',

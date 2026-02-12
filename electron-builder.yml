@@ -15,6 +15,15 @@ extraResources:
     to: everything
     filter:
       - "**/*"
+  - from: resources/citydata
+    to: citydata
+    filter:
+      - "**/*"
+  - from: build/icon.ico
+    to: icon.ico
+  # 打包 Everything 安装程序，安装时引导用户安装
+  - from: Everything-1.4.1.1032.x64-Setup.exe
+    to: Everything-Setup.exe
 
 win:
   target:
@@ -25,6 +34,11 @@ win:
   artifactName: ${productName}-${version}-Setup.${ext}
   signAndEditExecutable: false
 
+# 添加应用图标到程序文件
+extraFiles:
+  - from: build/icon.ico
+    to: icon.ico
+
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
@@ -32,5 +46,17 @@ nsis:
   createStartMenuShortcut: true
   shortcutName: EverythingAgent
   runAfterFinish: true
+  # 升级配置 - 自动卸载旧版本
+  deleteAppDataOnUninstall: false
+  # 允许覆盖安装
+  allowElevation: true
+  # 安装前卸载旧版本
+  uninstallerIcon: build/icon.ico
+  # 自定义 NSIS 脚本 - 引导安装 Everything
+  include: build/installer.nsh
 
 asar: true
+
+# pdfjs-dist 需要从 asar 中解包，以便 worker 能正常加载
+asarUnpack:
+  - "node_modules/pdfjs-dist/**"

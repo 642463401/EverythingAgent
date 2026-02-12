@@ -28,13 +28,20 @@ const BLOCKED_PATTERNS = [
 
 // Strictly binary - never attempt to read as text
 const BINARY_EXTS = new Set([
-  '.exe', '.dll', '.bin', '.so', '.dylib',
-  '.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz',
-  '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.webp',
-  '.mp3', '.mp4', '.avi', '.mov', '.mkv', '.flac', '.wav', '.ogg',
+  '.exe', '.dll', '.bin', '.so', '.dylib', '.obj', '.o', '.lib', '.a',
+  '.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz', '.zst', '.cab', '.iso', '.dmg', '.msi',
+  '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.webp', '.svg', '.tiff', '.tif', '.psd', '.ai', '.raw', '.cr2', '.nef',
+  '.mp3', '.mp4', '.avi', '.mov', '.mkv', '.flac', '.wav', '.ogg', '.aac', '.wma', '.wmv', '.webm', '.m4a', '.m4v',
   '.woff', '.woff2', '.ttf', '.otf', '.eot',
-  '.docx', '.xlsx', '.pptx',  // Office XML formats are ZIP-based binary
+  '.doc', '.xls', '.ppt',                    // Legacy Office binary formats
+  '.docx', '.xlsx', '.pptx',                 // Office XML formats (ZIP-based)
+  '.class', '.pyc', '.pyo', '.wasm',         // Compiled code
+  '.db', '.sqlite', '.sqlite3', '.mdb',      // Database files
+  '.dat', '.bak',                             // Data/backup
 ])
+
+// Formats with special extraction support (not blocked, handled separately)
+const PDF_EXTS = new Set(['.pdf'])
 
 // ==================== Helpers ====================
 
@@ -89,6 +96,137 @@ function decodeBuffer(buf: Buffer): string {
   }
 }
 
+// ==================== Read PDF ====================
+
+const MAX_PDF_SIZE = 20 * 1024 * 1024  // 20MB max for PDF files
+const MAX_PDF_TEXT = 100 * 1024         // 100KB max extracted text to send to LLM
+
+/**
+ * Lazy-load pdfjs-dist (externalized from Vite bundle).
+ * Uses the legacy build for better Node.js compatibility.
+ * Caches the loaded module for subsequent calls.
+ */
+let _pdfjsPromise: Promise<any> | null = null
+
+function loadPdfjs(): Promise<any> {
+  if (!_pdfjsPromise) {
+    _pdfjsPromise = (async () => {
+      const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs')
+
+      // Configure worker for Node.js / Electron environment
+      try {
+        const { createRequire } = await import('node:module')
+        const nodeRequire = createRequire(__filename)
+        let pkgDir = path.dirname(nodeRequire.resolve('pdfjs-dist/package.json'))
+
+        // In packaged Electron app, asarUnpack puts files at app.asar.unpacked
+        // require.resolve returns app.asar/... but actual files are at app.asar.unpacked/...
+        // Worker files must be real files (not inside asar), so use the unpacked path
+        if (pkgDir.includes('app.asar')) {
+          pkgDir = pkgDir.replace('app.asar', 'app.asar.unpacked')
+        }
+
+        const workerPath = path.join(pkgDir, 'legacy', 'build', 'pdf.worker.mjs')
+
+        if (fs.existsSync(workerPath)) {
+          pdfjsLib.GlobalWorkerOptions.workerSrc = workerPath
+          console.log('[fileTools] pdfjs worker configured:', workerPath)
+        } else {
+          console.warn('[fileTools] pdfjs worker not found at:', workerPath, '- will use main thread')
+        }
+      } catch (e) {
+        console.warn('[fileTools] Failed to configure pdfjs worker, will use main thread:', e)
+      }
+
+      return pdfjsLib
+    })()
+  }
+  return _pdfjsPromise
+}
+
+async function readPdf(filePath: string, fileSize: number): Promise<string> {
+  if (fileSize > MAX_PDF_SIZE) {
+    return JSON.stringify({
+      path: filePath,
+      size: fileSize,
+      type: '.pdf',
+      error: `PDF 文件过大 (${(fileSize / 1024 / 1024).toFixed(1)}MB)，最大支持 ${MAX_PDF_SIZE / 1024 / 1024}MB`,
+    })
+  }
+
+  let doc: any = null
+  try {
+    const pdfjsLib = await loadPdfjs()
+    const buffer = await fsp.readFile(filePath)
+
+    const loadingTask = pdfjsLib.getDocument({
+      data: new Uint8Array(buffer),
+      useSystemFonts: true,
+      isEvalSupported: false,
+      useWorkerFetch: false,
+    })
+
+    doc = await loadingTask.promise
+    const totalPages = doc.numPages
+    const maxPages = Math.min(totalPages, 200)
+    let text = ''
+
+    for (let i = 1; i <= maxPages; i++) {
+      const page = await doc.getPage(i)
+      const textContent = await page.getTextContent()
+      const pageText = textContent.items
+        .filter((item: any) => 'str' in item)
+        .map((item: any) => item.str)
+        .join('')
+      text += pageText + '\n'
+    }
+
+    // Trim excessive whitespace (PDF extraction often produces lots of blank lines)
+    text = text.replace(/\n{3,}/g, '\n\n').trim()
+
+    const truncated = text.length > MAX_PDF_TEXT
+    if (truncated) {
+      text = text.slice(0, MAX_PDF_TEXT) + '\n\n... (内容已截断，仅显示前 100KB)'
+    }
+
+    // Get metadata
+    let info: any = {}
+    try {
+      const metadata = await doc.getMetadata()
+      info = metadata?.info || {}
+    } catch { /* ignore metadata extraction errors */ }
+
+    return JSON.stringify({
+      path: filePath,
+      size: fileSize,
+      type: '.pdf',
+      pages: totalPages,
+      info: {
+        title: info.Title || undefined,
+        author: info.Author || undefined,
+        subject: info.Subject || undefined,
+        creator: info.Creator || undefined,
+      },
+      contentLength: text.length,
+      truncated,
+      content: text || '(PDF 中未提取到文本内容，可能是扫描件或纯图片 PDF)',
+    })
+  } catch (err: any) {
+    console.error('[fileTools] readPdf error:', err)
+    return JSON.stringify({
+      path: filePath,
+      size: fileSize,
+      type: '.pdf',
+      error: `PDF 解析失败: ${err.message}`,
+      suggestion: '如果是加密的 PDF，请先解除密码保护。也可尝试使用 run_command 调用 Python (PyPDF2/pdfplumber) 来读取。',
+    })
+  } finally {
+    if (doc) {
+      try { await doc.destroy() } catch { /* ignore cleanup errors */ }
+    }
+  }
+}
+
 // ==================== Read File ====================
 
 export async function readFile(filePath: string): Promise<string> {
@@ -110,25 +248,41 @@ export async function readFile(filePath: string): Promise<string> {
       return JSON.stringify({ error: `"${resolved}" 是目录而非文件，请使用 list_directory 工具` })
     }
 
-    if (stat.size > MAX_READ_SIZE) {
-      return JSON.stringify({
-        error: `文件过大 (${(stat.size / 1024).toFixed(1)}KB)，最大支持 ${MAX_READ_SIZE / 1024}KB`,
-        path: resolved,
-        size: stat.size,
-      })
-    }
-
-    // Strictly binary files - refuse immediately
+    // Strictly binary files - refuse immediately (check before size limit, as it's cheaper)
     if (isBinaryFile(resolved)) {
       const ext = getFileExtension(resolved)
+      const officeExts = new Set(['.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx'])
+      const imageExts = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.psd'])
+      const archiveExts = new Set(['.zip', '.rar', '.7z', '.tar', '.gz'])
+      let suggestion: string | undefined
+      if (officeExts.has(ext)) {
+        suggestion = '这是 Office 文档格式。可使用 run_command 调用 Python (python-docx/openpyxl/python-pptx) 来读取内容。'
+      } else if (imageExts.has(ext)) {
+        suggestion = '这是图片文件，无法提取文本内容。'
+      } else if (archiveExts.has(ext)) {
+        suggestion = '这是压缩文件。可使用 run_command 调用解压命令查看内容。'
+      }
       return JSON.stringify({
         path: resolved,
         size: stat.size,
         type: ext,
         error: `不支持读取二进制文件 (${ext})`,
-        suggestion: ext === '.docx' || ext === '.xlsx' || ext === '.pptx'
-          ? '这是 Office XML 格式（本质是 ZIP 压缩包）。建议使用 .md 或 .txt 格式来创建文档。'
-          : undefined,
+        suggestion,
+      })
+    }
+
+    // PDF files - extract text using pdf-parse (has its own 20MB size limit)
+    const ext = getFileExtension(resolved)
+    if (PDF_EXTS.has(ext)) {
+      return await readPdf(resolved, stat.size)
+    }
+
+    // Size limit for text files
+    if (stat.size > MAX_READ_SIZE) {
+      return JSON.stringify({
+        error: `文件过大 (${(stat.size / 1024).toFixed(1)}KB)，最大支持 ${MAX_READ_SIZE / 1024}KB`,
+        path: resolved,
+        size: stat.size,
       })
     }
 
@@ -154,7 +308,6 @@ export async function readFile(filePath: string): Promise<string> {
     }
 
     if (nullCount > checkLength * 0.01) {
-      const ext = getFileExtension(resolved)
       return JSON.stringify({
         path: resolved,
         size: stat.size,

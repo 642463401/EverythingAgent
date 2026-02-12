@@ -7,3 +7,12 @@ release/
 Thumbs.db
 .env
 .env.local
+
+# Windows reserved names
+nul
+
+# Claude Code local settings
+.claude/
+
+# Installers & binary artifacts
+*.exe

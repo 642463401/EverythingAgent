@@ -238,6 +238,22 @@ export function SpotlightBar({ onOpenSettings, hidden }: SpotlightBarProps) {
     setConversations((prev) => prev.filter((c) => c.id !== id))
   }, [])
 
+  const handleRegenerate = useCallback(async () => {
+    if (isLoading || messages.length < 2) return
+
+    // Remove last assistant message
+    const newMessages = messages.slice(0, -1)
+    setMessages(newMessages)
+    setIsLoading(true)
+
+    const apiMessages = newMessages.map((m) => ({ role: m.role, content: m.content }))
+    const requestId = crypto.randomUUID()
+    currentRequestId.current = requestId
+    setMessages((prev) => [...prev, { id: `stream-${requestId}`, role: 'assistant', content: '', timestamp: Date.now() }])
+
+    try { await window.electronAPI?.chatSend(requestId, apiMessages) } catch { /* handled by events */ }
+  }, [messages, isLoading])
+
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (isInSearchMode && searchResults.length > 0) {
       if (e.key === 'ArrowDown') { e.preventDefault(); setSelectedIndex((p) => Math.min(p + 1, searchResults.length - 1)); return }
@@ -364,7 +380,7 @@ export function SpotlightBar({ onOpenSettings, hidden }: SpotlightBarProps) {
 
               {/* Chat */}
               {!showHistory && showChatPanel && (
-                <ChatWindow messages={messages} isLoading={isLoading} />
+                <ChatWindow messages={messages} isLoading={isLoading} onRegenerate={handleRegenerate} />
               )}
             </div>
           )}

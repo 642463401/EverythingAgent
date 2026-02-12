@@ -13,6 +13,7 @@ import { configManager, conversationManager } from './configManager'
 import { IPC_CHANNELS } from '../src/types/config'
 import { searchEverything, isEverythingAvailable, openSearchResult, revealInExplorer } from './tools/everythingSearch'
 import { sendChatStream, abortChatRequest } from './tools/chatService'
+import { mcpService } from './tools/mcpService'
 
 // ==================== Constants ====================
 
@@ -24,6 +25,7 @@ const EXPANDED_HEIGHT = 520  // Fixed height when chat/search is open
 
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
+let appIconPath: string = ''
 let savedPosition: { x: number; y: number } | null = null
 let currentHeight = COMPACT_HEIGHT // Track current height to prevent resize during drag
 
@@ -35,6 +37,11 @@ function createWindow() {
 
   const initialX = Math.round((screenWidth - INITIAL_WIDTH) / 2)
   const initialY = displayY + 180
+
+  // 获取图标路径
+  appIconPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'icon.ico')
+    : path.join(__dirname, '../build/icon.ico')
 
   mainWindow = new BrowserWindow({
     width: INITIAL_WIDTH,
@@ -49,6 +56,7 @@ function createWindow() {
     skipTaskbar: true,
     alwaysOnTop: true,
     show: false,
+    icon: appIconPath, // 设置窗口图标
     hasShadow: false, // Disable native shadow to prevent black border artifacts
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -129,9 +137,8 @@ function hideWindow() {
 // ==================== System Tray ====================
 
 function createTray() {
-  const icon = nativeImage.createFromDataURL(
-    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAABHNCSVQICAgIfAhkiAAAAGNJREFUOE9jZKAQMFKon2HUAIZhEAY4Q+n/DAwMq0GaQeGAxoiCDcCwgMQApAZkiDcoHJA1gNgYUJqBOAwIMYBBYAmIDULCgGbxgKoGYE0HxBpAVBjgSwdUdcHgjAe8MUHtfAAALaMhEWmfHjsAAAAASUVORK5CYII='
-  )
+  // 使用应用图标（logo.png 转换而来的 icon.ico）
+  const icon = nativeImage.createFromPath(appIconPath).resize({ width: 16, height: 16 })
 
   tray = new Tray(icon)
   tray.setToolTip('EverythingAgent')
@@ -194,11 +201,17 @@ function setupIPC() {
 
   // Settings
   ipcMain.handle(IPC_CHANNELS.GET_SETTINGS, () => configManager.getSettings())
-  ipcMain.handle(IPC_CHANNELS.SET_SETTINGS, (_event, settings) => {
+  ipcMain.handle(IPC_CHANNELS.SET_SETTINGS, async (_event, settings) => {
     const oldSettings = configManager.getSettings()
     configManager.setSettings(settings)
     if (settings.globalShortcut && settings.globalShortcut !== oldSettings.globalShortcut) {
       registerGlobalShortcut()
+    }
+    // Reinitialize MCP if DashScope API key changed
+    if (settings.dashscopeApiKey !== oldSettings.dashscopeApiKey) {
+      mcpService.reinitialize().catch((err) => {
+        console.error('[MCP] Reinitialize error:', err.message)
+      })
     }
     return configManager.getSettings()
   })
@@ -325,7 +338,10 @@ app.on('ready', () => {
 })
 
 app.on('window-all-closed', () => { /* keep running in tray */ })
-app.on('will-quit', () => globalShortcut.unregisterAll())
+app.on('will-quit', () => {
+  globalShortcut.unregisterAll()
+  mcpService.shutdown().catch(() => {})
+})
 app.on('activate', () => { if (!mainWindow) createWindow() })
 
 const gotTheLock = app.requestSingleInstanceLock()
