@@ -53,7 +53,7 @@
   - 安装依赖（pip install / npm install）
   - Git 操作、编译构建、运行测试
 - 安全保护：危险命令拦截、系统目录禁止执行、30 秒超时、输出截断
-- 最多 15 轮工具调用迭代，支持复杂任务
+- 最多 30 轮工具调用迭代，支持复杂多步任务
 
 ### Office 文档生成（带回退机制）
 
@@ -64,6 +64,37 @@
 - 自动检测 Python 环境是否可用
 - 回退机制：若 Python 不可用或脚本执行失败，自动生成 `.md` Markdown 格式文档
 
+### 文件管理与系统操作
+
+- **文件管理**：复制、移动、重命名、删除文件/文件夹（删除到回收站，安全可恢复）
+- **打开应用**：通过中英文名称启动已安装应用（如"微信"、"Chrome"、"VSCode"）
+- **打开文件**：用默认程序或指定程序打开文件
+- **桌面控制**：隐藏/显示桌面图标
+
+### AI 记忆系统
+
+- AI 在每轮对话结束后**自动提炼关键信息**（用户偏好、个人信息、项目上下文等）
+- 记忆持久化存储，跨对话自动注入，实现个性化体验
+- 智能去重：已有记忆自动更新而非重复添加
+- 设置面板中提供**记忆管理界面**，可查看、删除、清空所有记忆
+- 记忆分类：偏好（preference）、事实（fact）、指令（instruction）、上下文（context）
+- 上限 200 条记忆，超出自动淘汰最旧条目
+
+### MCP 扩展服务
+
+- 集成 **Model Context Protocol**，支持动态接入第三方工具
+- 预置 MCP 服务（通过 DashScope API 接入）：
+  - 墨迹天气查询、12306 火车票查询、飞常准机票查询
+  - 代码解释器、md 转文档、高德地图、AIOCR、菜谱查询
+- 支持 `streamable-http` 和 `sse` 两种传输方式
+- 设置面板中可按需开启/关闭各 MCP 服务
+
+### 任务规划与进度管理
+
+- 复杂任务自动分解为 3-10 个子任务
+- 实时进度跟踪：每个子任务有 pending / in_progress / completed / skipped 状态
+- 上下文压缩：自动压缩历史工具调用结果，最多支持 30 轮工具迭代
+
 ## AI 工具一览
 
 | 工具 | 说明 |
@@ -71,11 +102,19 @@
 | `everything_search` | 本地文件/文件夹极速搜索（Everything） |
 | `web_search` | 联网搜索实时信息（秘塔 AI） |
 | `web_reader` | 读取并提取网页正文内容 |
-| `read_file` | 读取本地文件内容（最大 512KB） |
+| `read_file` | 读取本地文件内容（支持 PDF，最大 512KB） |
 | `write_file` | 创建或写入文本文件 |
 | `list_directory` | 列出目录下的文件和文件夹 |
 | `analyze_data` | 分析 CSV/TSV/JSON 数据文件 |
 | `run_command` | 执行系统命令（Python、npm、git 等） |
+| `file_manage` | 文件管理（复制/移动/重命名/删除/创建文件夹） |
+| `open_application` | 通过名称打开已安装应用 |
+| `open_file` | 用默认或指定程序打开文件 |
+| `desktop_control` | 桌面图标显示/隐藏控制 |
+| `create_document` | 生成 Office 文档（Word/Excel/PPT/PDF/Markdown） |
+| `task_progress` | 任务规划与进度管理 |
+| `city_lookup` | 城市 ID 查询（配合天气 MCP 使用） |
+| MCP 工具 | 动态扩展工具（天气/火车票/机票/代码解释器等） |
 
 ## 技术栈
 
@@ -100,13 +139,17 @@ EverythingAgent/
 ├── electron/                    # Electron 主进程
 │   ├── main.ts                  #   窗口管理 / 全局快捷键 / 系统托盘 / IPC
 │   ├── preload.ts               #   contextBridge 安全桥接
-│   ├── configManager.ts         #   electron-store 配置管理器（含对话历史）
+│   ├── configManager.ts         #   electron-store 配置管理器（含对话历史 + AI 记忆）
 │   └── tools/
 │       ├── everythingSearch.ts   #   Everything 搜索工具
 │       ├── webSearch.ts          #   秘塔 AI 联网搜索 + 网页阅读
 │       ├── fileTools.ts          #   文件读写 / 目录浏览 / 数据分析
 │       ├── commandRunner.ts      #   命令执行工具（安全沙箱）
-│       └── chatService.ts        #   AI 对话服务（流式 + 工具调用编排）
+│       ├── fileManager.ts        #   文件管理 / 应用启动 / 桌面控制
+│       ├── documentGenerator.ts  #   Office 文档生成（Python + 回退）
+│       ├── mcpService.ts         #   MCP 服务管理（第三方工具接入）
+│       ├── cityLookup.ts         #   城市 ID 查询
+│       └── chatService.ts        #   AI 对话服务（流式 + 工具调用 + 记忆提炼）
 ├── src/                         # 渲染进程 (React)
 │   ├── App.tsx                  #   根组件
 │   ├── main.tsx                 #   React 入口
@@ -115,11 +158,14 @@ EverythingAgent/
 │   │   ├── SpotlightBar.tsx     #   Spotlight 浮动输入栏
 │   │   ├── ChatWindow.tsx       #   AI 对话窗口
 │   │   ├── SearchResults.tsx    #   Everything 搜索结果列表
+│   │   ├── ToolStatusIndicator.tsx  # 工具执行状态显示
+│   │   ├── TaskProgressIndicator.tsx # 任务进度可视化
 │   │   ├── settings/            #   设置面板
 │   │   │   ├── SettingsPanel.tsx
 │   │   │   ├── ModelProviderList.tsx
 │   │   │   ├── ModelProviderForm.tsx
-│   │   │   └── GeneralSettings.tsx
+│   │   │   ├── GeneralSettings.tsx
+│   │   │   └── MemorySettings.tsx   # AI 记忆管理界面
 │   │   └── ui/                  #   shadcn/ui 基础组件
 │   ├── hooks/
 │   │   └── useElectron.ts       #   IPC hooks (useModels / useSettings)
@@ -244,8 +290,11 @@ release/EverythingAgent-1.0.0-Setup.exe
 - [x] Auto-Coder 自主编码代理
 - [x] 命令执行（run_command）
 - [x] Office 文档生成（Python 脚本 + 回退机制）
+- [x] 文件管理（复制/移动/重命名/删除）+ 应用启动 + 桌面控制
+- [x] MCP 扩展服务（天气/火车票/机票/代码解释器等）
+- [x] 任务规划与进度管理
+- [x] AI 记忆系统（自动提炼 + 跨对话持久化）
 - [ ] 插件系统
-- [ ] 多轮对话上下文管理优化
 - [ ] 自定义工具扩展
 
 ## 许可证

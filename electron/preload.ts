@@ -45,6 +45,11 @@ const electronAPI = {
   conversationsSave: (conv: unknown) => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATIONS_SAVE, conv),
   conversationsDelete: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.CONVERSATIONS_DELETE, id),
 
+  // ==================== Memory ====================
+  memoryList: () => ipcRenderer.invoke(IPC_CHANNELS.MEMORY_LIST),
+  memoryDelete: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.MEMORY_DELETE, id),
+  memoryClear: () => ipcRenderer.invoke(IPC_CHANNELS.MEMORY_CLEAR),
+
   // ==================== App ====================
   getAppPath: () => ipcRenderer.invoke(IPC_CHANNELS.GET_APP_PATH),
   openExternal: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.OPEN_EXTERNAL, url),

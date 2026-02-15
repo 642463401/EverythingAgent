@@ -72,10 +72,19 @@ export function SpotlightBar({ onOpenSettings, hidden }: SpotlightBarProps) {
   useEffect(() => {
     if (!window.electronAPI) return undefined
     const cleanup = window.electronAPI.onToggleWindow(() => {
+      // Reset expanded panels when window is re-shown
+      setShowHistory(false)
       setTimeout(() => inputRef.current?.focus(), 150)
     })
     return () => { cleanup() }
   }, [])
+
+  // Re-expand window when becoming visible with existing content
+  useEffect(() => {
+    if (!hidden && hasExpandedContent) {
+      expandWindow()
+    }
+  }, [hidden])
 
   // ==================== Search ====================
   useEffect(() => {

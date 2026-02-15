@@ -9,7 +9,7 @@ import {
   screen,
 } from 'electron'
 import path from 'node:path'
-import { configManager, conversationManager } from './configManager'
+import { configManager, conversationManager, memoryManager } from './configManager'
 import { IPC_CHANNELS } from '../src/types/config'
 import { searchEverything, isEverythingAvailable, openSearchResult, revealInExplorer } from './tools/everythingSearch'
 import { sendChatStream, abortChatRequest } from './tools/chatService'
@@ -122,6 +122,7 @@ function showWindow() {
     mainWindow.setBounds({ x, y, width: INITIAL_WIDTH, height: COMPACT_HEIGHT })
   }
 
+  mainWindow.setAlwaysOnTop(true, 'screen-saver')
   mainWindow.show()
   mainWindow.focus()
   mainWindow.webContents.send(IPC_CHANNELS.TOGGLE_WINDOW)
@@ -247,6 +248,15 @@ function setupIPC() {
     conversationManager.deleteConversation(id)
   })
 
+  // ==================== Memory ====================
+  ipcMain.handle(IPC_CHANNELS.MEMORY_LIST, () => memoryManager.getMemories())
+  ipcMain.handle(IPC_CHANNELS.MEMORY_DELETE, (_event, id: string) => {
+    memoryManager.deleteMemory(id)
+  })
+  ipcMain.handle(IPC_CHANNELS.MEMORY_CLEAR, () => {
+    memoryManager.clearMemories()
+  })
+
   // ==================== Everything Search ====================
   ipcMain.handle(IPC_CHANNELS.EVERYTHING_SEARCH, async (_event, options) => {
     try {
@@ -268,7 +278,8 @@ function setupIPC() {
 
   ipcMain.on(IPC_CHANNELS.MOVE_WINDOW, (_event, x: number, y: number) => {
     if (!mainWindow) return
-    mainWindow.setPosition(Math.round(x), Math.round(y))
+    const bounds = mainWindow.getBounds()
+    mainWindow.setBounds({ x: Math.round(x), y: Math.round(y), width: bounds.width, height: bounds.height })
     savedPosition = { x: Math.round(x), y: Math.round(y) }
   })
 

@@ -47,6 +47,15 @@ export interface Conversation {
   updatedAt: number
 }
 
+/** AI Memory entry */
+export interface Memory {
+  id: string
+  content: string
+  category: 'preference' | 'fact' | 'instruction' | 'context'
+  createdAt: number
+  updatedAt: number
+}
+
 /** Everything Search result */
 export interface SearchResult {
   fullPath: string
@@ -98,6 +107,11 @@ export const IPC_CHANNELS = {
   CONVERSATIONS_LIST: 'conversations:list',
   CONVERSATIONS_SAVE: 'conversations:save',
   CONVERSATIONS_DELETE: 'conversations:delete',
+
+  // Memory
+  MEMORY_LIST: 'memory:list',
+  MEMORY_DELETE: 'memory:delete',
+  MEMORY_CLEAR: 'memory:clear',
 
   // App
   GET_APP_PATH: 'app:get-path',

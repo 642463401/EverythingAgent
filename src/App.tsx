@@ -14,8 +14,8 @@ function App() {
     setShowSettings(false)
   }, [])
 
-  // Listen for settings toggle from main process (tray menu)
-  useWindowEvents(undefined, handleOpenSettings)
+  // Listen for window toggle (close settings on re-show) and settings open from tray
+  useWindowEvents(handleCloseSettings, handleOpenSettings)
 
   return (
     <div className="w-full h-full overflow-hidden">

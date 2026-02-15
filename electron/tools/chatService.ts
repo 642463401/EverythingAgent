@@ -3,7 +3,7 @@
  * The AI can autonomously invoke Everything search via OpenAI-compatible function calling.
  */
 
-import { configManager } from '../configManager'
+import { configManager, memoryManager } from '../configManager'
 import { searchEverything } from './everythingSearch'
 import { webSearch, webReader, isWebSearchAvailable } from './webSearch'
 import { readFile, writeFile, listDirectory, analyzeData } from './fileTools'
@@ -576,6 +576,14 @@ function buildMcpPromptSection(): string {
 当用户需要查询天气、火车票、机票或执行代码时，优先使用对应的 MCP 工具。`
 }
 
+function buildMemoryPromptSection(): string {
+  const memories = memoryManager.getMemories()
+  if (memories.length === 0) return ''
+  const lines = memories.map((m) => `- ${m.content}`)
+  return `\n\n用户记忆（来自之前的对话，请参考这些信息来个性化你的回复，不需要主动提及这些记忆，除非与当前话题相关）：
+${lines.join('\n')}`
+}
+
 /**
  * Parse a single streaming round. Returns accumulated content and tool calls.
  */
@@ -1037,6 +1045,104 @@ function compressMessages(messages: ChatRequestMessage[]): void {
 }
 
 /**
+ * Extract memories from a completed conversation (async, non-blocking).
+ * Sends a separate non-streaming request to the AI to identify key facts.
+ */
+async function extractMemories(
+  url: string,
+  headers: Record<string, string>,
+  modelName: string,
+  conversationMessages: ChatRequestMessage[],
+): Promise<void> {
+  try {
+    // Build a compact conversation summary (only user + assistant text, skip tool details)
+    const dialogParts: string[] = []
+    for (const msg of conversationMessages) {
+      if (msg.role === 'user' && msg.content) {
+        dialogParts.push(`用户: ${msg.content}`)
+      } else if (msg.role === 'assistant' && msg.content) {
+        // Strip tool status lines (emoji lines)
+        const cleaned = msg.content.split('\n').filter((l) => !l.match(/^[\p{Emoji}]\s*正在/u)).join('\n').trim()
+        if (cleaned) dialogParts.push(`助手: ${cleaned}`)
+      }
+    }
+
+    // Skip extraction if conversation is too short
+    if (dialogParts.length < 2) return
+
+    const existingMemories = memoryManager.getMemories()
+    const existingList = existingMemories.length > 0
+      ? existingMemories.map((m) => `[${m.id}] ${m.content}`).join('\n')
+      : '（无）'
+
+    const extractionPrompt = `你是一个记忆提炼助手。请从以下对话中提取值得长期记忆的关键信息。
+
+规则：
+1. 提取用户的偏好、习惯、个人信息（姓名、职业、公司、位置等）
+2. 提取用户明确要求"记住"的指令或偏好
+3. 提取重要的项目/工作上下文（常用目录、技术栈等）
+4. 跳过临时性、一次性的操作信息（如"帮我搜索xxx"、"打开某文件"等）
+5. 每条记忆用一句简洁的话描述（不超过50字）
+6. 如果与已有记忆重复或需要更新，设置 update_id 为对应记忆的ID
+7. 如果没有值得记忆的内容，返回空数组 []
+8. category 取值: preference(偏好), fact(事实), instruction(指令), context(上下文)
+
+已有记忆：
+${existingList}
+
+对话内容：
+${dialogParts.join('\n')}
+
+请严格以 JSON 数组格式输出，不要包含其他文字：
+[{"content": "...", "category": "...", "update_id": "可选"}]`
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model: modelName,
+        messages: [
+          { role: 'system', content: '你是一个专注于提取关键信息的助手。你只输出合法的 JSON 数组，不输出任何其他内容。' },
+          { role: 'user', content: extractionPrompt },
+        ],
+        stream: false,
+        temperature: 0.3,
+        max_tokens: 2048,
+      }),
+    })
+
+    if (!response.ok) return
+
+    const data = await response.json()
+    const text = data.choices?.[0]?.message?.content?.trim()
+    if (!text) return
+
+    // Parse JSON from the response (handle markdown code blocks)
+    let jsonStr = text
+    const codeBlockMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/)
+    if (codeBlockMatch) jsonStr = codeBlockMatch[1].trim()
+
+    const parsed = JSON.parse(jsonStr)
+    if (!Array.isArray(parsed) || parsed.length === 0) return
+
+    const validMemories = parsed
+      .filter((item: any) => item.content && typeof item.content === 'string')
+      .map((item: any) => ({
+        content: item.content.slice(0, 200),
+        category: ['preference', 'fact', 'instruction', 'context'].includes(item.category) ? item.category : 'context',
+        updateId: item.update_id || undefined,
+      }))
+
+    if (validMemories.length > 0) {
+      memoryManager.addOrUpdateMemories(validMemories)
+      console.log(`[Memory] Extracted ${validMemories.length} memories`)
+    }
+  } catch (err: any) {
+    console.error('[Memory] Extraction failed:', err.message)
+  }
+}
+
+/**
  * Send a chat request with streaming and tool calling support.
  * The AI can autonomously call tools and the results are fed back.
  */
@@ -1072,7 +1178,7 @@ export async function sendChatStream(
     weekday: 'long',
     hour12: false,
   })
-  const systemContent = `${SYSTEM_PROMPT}${buildMcpPromptSection()}\n\n当前时间: ${timestamp}`
+  const systemContent = `${SYSTEM_PROMPT}${buildMcpPromptSection()}${buildMemoryPromptSection()}\n\n当前时间: ${timestamp}`
   const messages: ChatRequestMessage[] = [
     { role: 'system', content: systemContent },
     ...userMessages,
@@ -1188,6 +1294,9 @@ export async function sendChatStream(
     }
 
     callbacks.onEnd(fullContent)
+
+    // Async memory extraction (non-blocking, fire-and-forget)
+    extractMemories(url, headers, model.modelName, userMessages).catch(() => {})
   } catch (err: any) {
     if (err.name === 'AbortError') {
       callbacks.onEnd(fullContent)

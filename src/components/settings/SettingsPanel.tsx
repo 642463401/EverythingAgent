@@ -1,11 +1,12 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react'
+import React, { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { X, Bot, Sliders, ArrowLeft, GripHorizontal } from 'lucide-react'
+import { X, Bot, Sliders, ArrowLeft, GripHorizontal, Brain } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { ModelProviderList } from './ModelProviderList'
 import { GeneralSettings } from './GeneralSettings'
+import { MemorySettings } from './MemorySettings'
 
-type SettingsTab = 'models' | 'general'
+type SettingsTab = 'models' | 'general' | 'memory'
 
 interface SettingsPanelProps {
   open: boolean
@@ -20,49 +21,11 @@ const COMPACT_HEIGHT = 84 // Must match main.ts INITIAL_HEIGHT
 const tabs: { id: SettingsTab; label: string; icon: React.ReactNode }[] = [
   { id: 'models', label: '模型配置', icon: <Bot className="w-4 h-4" /> },
   { id: 'general', label: '通用设置', icon: <Sliders className="w-4 h-4" /> },
+  { id: 'memory', label: 'AI 记忆', icon: <Brain className="w-4 h-4" /> },
 ]
-
-/** Hook for IPC-based manual window dragging */
-function useDrag() {
-  const isDragging = useRef(false)
-  const startScreen = useRef({ x: 0, y: 0 })
-  const startWin = useRef({ x: 0, y: 0 })
-
-  const onMouseDown = useCallback(async (e: React.MouseEvent) => {
-    if (e.button !== 0) return
-    if (!window.electronAPI) return
-    e.preventDefault()
-
-    const bounds = await window.electronAPI.getWindowBounds()
-    if (!bounds) return
-
-    isDragging.current = true
-    startScreen.current = { x: e.screenX, y: e.screenY }
-    startWin.current = { x: bounds.x, y: bounds.y }
-
-    const onMove = (ev: MouseEvent) => {
-      if (!isDragging.current) return
-      const dx = ev.screenX - startScreen.current.x
-      const dy = ev.screenY - startScreen.current.y
-      window.electronAPI.moveWindow(startWin.current.x + dx, startWin.current.y + dy)
-    }
-
-    const onUp = () => {
-      isDragging.current = false
-      document.removeEventListener('mousemove', onMove)
-      document.removeEventListener('mouseup', onUp)
-    }
-
-    document.addEventListener('mousemove', onMove)
-    document.addEventListener('mouseup', onUp)
-  }, [])
-
-  return onMouseDown
-}
 
 export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
   const [activeTab, setActiveTab] = useState<SettingsTab>('models')
-  const onDragMouseDown = useDrag()
 
   // Resize window when settings opens/closes
   useEffect(() => {
@@ -100,11 +63,8 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
 
   return (
     <div className="w-full h-screen flex flex-col bg-[#1a1a1a] rounded-2xl overflow-hidden">
-      {/* Drag handle */}
-      <div
-        className="flex items-center justify-center h-5 cursor-grab active:cursor-grabbing select-none"
-        onMouseDown={onDragMouseDown}
-      >
+      {/* Drag handle - uses native drag-region to avoid setPosition bugs on Windows */}
+      <div className="flex items-center justify-center h-5 select-none drag-region cursor-default">
         <GripHorizontal className="w-5 h-3.5 text-muted-foreground/20" />
       </div>
 
@@ -169,6 +129,17 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
               transition={{ duration: 0.15 }}
             >
               <GeneralSettings />
+            </motion.div>
+          )}
+          {activeTab === 'memory' && (
+            <motion.div
+              key="memory"
+              initial={{ opacity: 0, x: -10 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 10 }}
+              transition={{ duration: 0.15 }}
+            >
+              <MemorySettings />
             </motion.div>
           )}
         </AnimatePresence>

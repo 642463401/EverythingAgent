@@ -1,5 +1,5 @@
 import Store from 'electron-store'
-import type { AppConfig, ModelConfig, AppSettings, Conversation } from '../src/types/config'
+import type { AppConfig, ModelConfig, AppSettings, Conversation, Memory } from '../src/types/config'
 import { app } from 'electron'
 import path from 'node:path'
 
@@ -191,4 +191,64 @@ class ConversationManager {
 
 export const configManager = new ConfigManager()
 export const conversationManager = new ConversationManager()
+
+// ==================== Memory Storage ====================
+
+const MAX_MEMORIES = 200
+
+class MemoryManager {
+  private store: Store<{ memories: Memory[] }>
+
+  constructor() {
+    this.store = new Store<{ memories: Memory[] }>({
+      name: 'everything-agent-memories',
+      defaults: { memories: [] },
+    })
+  }
+
+  getMemories(): Memory[] {
+    return this.store.get('memories', [])
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+  }
+
+  addOrUpdateMemories(newMemories: { content: string; category: Memory['category']; updateId?: string }[]): void {
+    const memories = this.store.get('memories', [])
+
+    for (const item of newMemories) {
+      if (item.updateId) {
+        // Update existing memory
+        const idx = memories.findIndex((m) => m.id === item.updateId)
+        if (idx !== -1) {
+          memories[idx].content = item.content
+          memories[idx].category = item.category
+          memories[idx].updatedAt = Date.now()
+          continue
+        }
+      }
+      // Add new memory
+      memories.push({
+        id: crypto.randomUUID(),
+        content: item.content,
+        category: item.category,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      })
+    }
+
+    // Keep only the most recent memories
+    const sorted = memories.sort((a, b) => b.updatedAt - a.updatedAt)
+    this.store.set('memories', sorted.slice(0, MAX_MEMORIES))
+  }
+
+  deleteMemory(id: string): void {
+    const memories = this.store.get('memories', []).filter((m) => m.id !== id)
+    this.store.set('memories', memories)
+  }
+
+  clearMemories(): void {
+    this.store.set('memories', [])
+  }
+}
+
+export const memoryManager = new MemoryManager()
 export default configManager
