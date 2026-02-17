@@ -60,7 +60,7 @@ export const MCP_SERVER_PRESETS: McpServerConfig[] = [
     id: 'amap',
     name: '高德地图',
     description: '地图、导航、POI搜索',
-    endpoint: 'https://dashscope.aliyuncs.com/api/v1/mcps/amap-maps/sse',
+    endpoint: 'https://mcp.amap.com/sse?key=',
     transport: 'sse',
     icon: '🗺️',
   },
@@ -104,35 +104,67 @@ class McpServiceManager {
 
   /** Initialize only user-enabled MCP connections */
   async initialize(): Promise<void> {
-    if (!this.isDashScopeConfigured()) {
-      console.log('[MCP] DashScope API Key not configured, skipping')
-      return
-    }
     if (this.initialized) return
 
     const settings = configManager.getSettings()
     const apiKey = settings.dashscopeApiKey
+    const amapKey = settings.amapApiKey
     const enabledIds = settings.enabledMcpServices || []
+    const customServices = settings.customMcpServices || []
 
-    if (enabledIds.length === 0) {
+    if (enabledIds.length === 0 && customServices.length === 0) {
       console.log('[MCP] No MCP services enabled, skipping')
       this.initialized = true
       return
     }
 
+    // Connect preset services
+    const hasDashScope = !!apiKey && apiKey.trim().length > 0
+    const hasAmap = !!amapKey && amapKey.trim().length > 0
+
     const serversToConnect = MCP_SERVER_PRESETS.filter((s) => enabledIds.includes(s.id))
 
     for (const serverConfig of serversToConnect) {
       try {
-        await this.connectServer(serverConfig, apiKey)
+        if (serverConfig.id === 'amap') {
+          if (!hasAmap) {
+            console.log('[MCP] Amap API Key not configured, skipping amap')
+            continue
+          }
+          await this.connectServer(serverConfig, amapKey, true)
+        } else {
+          if (!hasDashScope) {
+            console.log(`[MCP] DashScope API Key not configured, skipping ${serverConfig.name}`)
+            continue
+          }
+          await this.connectServer(serverConfig, apiKey)
+        }
       } catch (err: any) {
         console.error(`[MCP] Failed to connect to ${serverConfig.name}: ${err.message}`)
       }
     }
 
+    // Connect custom user services (SSE, no auth header)
+    for (const custom of customServices) {
+      try {
+        const customConfig: McpServerConfig = {
+          id: `custom-${custom.id}`,
+          name: custom.name,
+          description: '自定义 MCP 服务',
+          endpoint: custom.endpoint,
+          transport: 'sse',
+          icon: '🔌',
+        }
+        await this.connectServer(customConfig, '', true)
+      } catch (err: any) {
+        console.error(`[MCP] Failed to connect to custom service ${custom.name}: ${err.message}`)
+      }
+    }
+
     this.initialized = true
+    const totalServers = serversToConnect.length + customServices.length
     console.log(
-      `[MCP] Initialized. Connected: ${this.connections.size}/${serversToConnect.length}, Total tools: ${this.toolToServer.size}`
+      `[MCP] Initialized. Connected: ${this.connections.size}/${totalServers}, Total tools: ${this.toolToServer.size}`
     )
   }
 
@@ -218,25 +250,26 @@ class McpServiceManager {
 
   // ---- Private methods ----
 
-  private async connectServer(config: McpServerConfig, apiKey: string): Promise<void> {
+  private async connectServer(config: McpServerConfig, apiKey: string, keyInUrl = false): Promise<void> {
     let transport: any
+    const endpoint = keyInUrl ? `${config.endpoint}${apiKey}` : config.endpoint
 
     if (config.transport === 'streamable-http') {
-      transport = new StreamableHTTPClientTransport(new URL(config.endpoint), {
-        requestInit: {
+      transport = new StreamableHTTPClientTransport(new URL(endpoint), {
+        requestInit: keyInUrl ? {} : {
           headers: {
             Authorization: `Bearer ${apiKey}`,
           },
         },
       })
     } else {
-      transport = new SSEClientTransport(new URL(config.endpoint), {
-        requestInit: {
+      transport = new SSEClientTransport(new URL(endpoint), {
+        requestInit: keyInUrl ? {} : {
           headers: {
             Authorization: `Bearer ${apiKey}`,
           },
         },
-        eventSourceInit: {
+        eventSourceInit: keyInUrl ? undefined : {
           fetch: (url: any, init: any) =>
             fetch(url, {
               ...init,

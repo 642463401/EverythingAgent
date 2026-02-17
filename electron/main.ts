@@ -208,8 +208,13 @@ function setupIPC() {
     if (settings.globalShortcut && settings.globalShortcut !== oldSettings.globalShortcut) {
       registerGlobalShortcut()
     }
-    // Reinitialize MCP if DashScope API key changed
-    if (settings.dashscopeApiKey !== oldSettings.dashscopeApiKey) {
+    // Reinitialize MCP if DashScope API key or custom services changed
+    if (
+      settings.dashscopeApiKey !== oldSettings.dashscopeApiKey ||
+      settings.amapApiKey !== oldSettings.amapApiKey ||
+      JSON.stringify(settings.customMcpServices) !== JSON.stringify(oldSettings.customMcpServices) ||
+      JSON.stringify(settings.enabledMcpServices) !== JSON.stringify(oldSettings.enabledMcpServices)
+    ) {
       mcpService.reinitialize().catch((err) => {
         console.error('[MCP] Reinitialize error:', err.message)
       })

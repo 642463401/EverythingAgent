@@ -12,6 +12,13 @@ export interface ModelConfig {
   isActive: boolean
 }
 
+/** Custom MCP service configured by user */
+export interface CustomMcpService {
+  id: string
+  name: string
+  endpoint: string
+}
+
 /** Application settings */
 export interface AppSettings {
   globalShortcut: string
@@ -21,7 +28,9 @@ export interface AppSettings {
   projectsPath: string
   metasoApiKey: string  // 秘塔 AI 搜索 API Key
   dashscopeApiKey: string  // DashScope API Key (MCP 服务)
+  amapApiKey: string  // 高德地图 API Key
   enabledMcpServices: string[]  // 用户启用的 MCP 服务 ID 列表
+  customMcpServices: CustomMcpService[]  // 用户自定义 MCP 服务
 }
 
 /** Full application config stored in electron-store */

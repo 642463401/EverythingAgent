@@ -12,7 +12,9 @@ const defaultSettings: AppSettings = {
   projectsPath: path.join(app.getPath('home'), 'EverythingAgent', 'Projects'),
   metasoApiKey: '',
   dashscopeApiKey: '',
+  amapApiKey: '',
   enabledMcpServices: [],
+  customMcpServices: [],
 }
 
 /** Default config */
@@ -53,10 +55,24 @@ const schema = {
       projectsPath: { type: 'string' as const },
       metasoApiKey: { type: 'string' as const, default: '' },
       dashscopeApiKey: { type: 'string' as const, default: '' },
+      amapApiKey: { type: 'string' as const, default: '' },
       enabledMcpServices: {
         type: 'array' as const,
         items: { type: 'string' as const },
         default: [] as string[],
+      },
+      customMcpServices: {
+        type: 'array' as const,
+        items: {
+          type: 'object' as const,
+          properties: {
+            id: { type: 'string' as const },
+            name: { type: 'string' as const },
+            endpoint: { type: 'string' as const },
+          },
+          required: ['id', 'name', 'endpoint'],
+        },
+        default: [],
       },
     },
     default: defaultSettings,

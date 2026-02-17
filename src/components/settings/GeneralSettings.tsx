@@ -1,7 +1,8 @@
-import React from 'react'
+import React, { useState } from 'react'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
+import { Button } from '@/components/ui/button'
 import {
   Select,
   SelectContent,
@@ -10,6 +11,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { useSettings } from '@/hooks/useElectron'
+import type { CustomMcpService } from '@/types/config'
 
 /** Preset MCP services (must match IDs in electron/tools/mcpService.ts) */
 const MCP_SERVICE_PRESETS = [
@@ -189,6 +191,33 @@ export function GeneralSettings() {
             />
           </div>
 
+          {/* Amap API Key */}
+          <div className="space-y-1.5">
+            <div>
+              <Label className="text-[12.5px]">高德地图 API Key</Label>
+              <p className="text-[11px] text-muted-foreground/60 mt-0.5">
+                配置后可使用高德地图 MCP 服务（地图、导航、POI搜索）。
+                <a
+                  href="#"
+                  onClick={(e) => {
+                    e.preventDefault()
+                    window.electronAPI?.openExternal?.('https://lbs.amap.com/dev/key/app')
+                  }}
+                  className="text-blue-400 hover:text-blue-300 ml-1"
+                >
+                  前往高德开放平台获取
+                </a>
+              </p>
+            </div>
+            <Input
+              type="password"
+              value={settings.amapApiKey || ''}
+              onChange={(e) => handleChange('amapApiKey', e.target.value)}
+              className="h-8 text-[12.5px] font-mono bg-white/[0.03]"
+              placeholder="输入高德地图 API Key"
+            />
+          </div>
+
           {/* MCP Service Toggles */}
           <div className="rounded-lg bg-white/[0.03] border border-white/[0.06] p-3 space-y-2.5">
             <p className="text-[11.5px] font-medium text-muted-foreground/80 mb-2">
@@ -196,6 +225,8 @@ export function GeneralSettings() {
             </p>
             {MCP_SERVICE_PRESETS.map((svc) => {
               const enabled = (settings.enabledMcpServices || []).includes(svc.id)
+              const isAmap = svc.id === 'amap'
+              const canToggle = isAmap ? !!settings.amapApiKey : !!settings.dashscopeApiKey
               return (
                 <div key={svc.id} className="flex items-center justify-between py-0.5">
                   <div className="flex items-center gap-2 min-w-0">
@@ -207,7 +238,7 @@ export function GeneralSettings() {
                   </div>
                   <Switch
                     checked={enabled}
-                    disabled={!settings.dashscopeApiKey}
+                    disabled={!canToggle}
                     onCheckedChange={(checked) => {
                       const current = settings.enabledMcpServices || []
                       const next = checked
@@ -224,6 +255,97 @@ export function GeneralSettings() {
                 请先配置 DashScope API Key 后再启用服务
               </p>
             )}
+          </div>
+        </div>
+      </div>
+
+      {/* Custom MCP Services Section */}
+      <CustomMcpSection settings={settings} onSave={saveSettings} />
+    </div>
+  )
+}
+
+function CustomMcpSection({ settings, onSave }: { settings: any; onSave: (s: any) => void }) {
+  const [name, setName] = useState('')
+  const [endpoint, setEndpoint] = useState('')
+
+  const customServices: CustomMcpService[] = settings.customMcpServices || []
+
+  const handleAdd = () => {
+    if (!name.trim() || !endpoint.trim()) return
+    const newService: CustomMcpService = {
+      id: crypto.randomUUID(),
+      name: name.trim(),
+      endpoint: endpoint.trim(),
+    }
+    onSave({ ...settings, customMcpServices: [...customServices, newService] })
+    setName('')
+    setEndpoint('')
+  }
+
+  const handleDelete = (id: string) => {
+    onSave({
+      ...settings,
+      customMcpServices: customServices.filter((s) => s.id !== id),
+    })
+  }
+
+  return (
+    <div>
+      <h3 className="text-[13.5px] font-semibold text-foreground mb-3">自定义 MCP 服务</h3>
+      <div className="space-y-3">
+        <p className="text-[11px] text-muted-foreground/60">
+          添加自定义 MCP 服务端点（SSE 协议），URL 中需包含所需的认证参数。
+        </p>
+
+        {/* Existing custom services */}
+        {customServices.length > 0 && (
+          <div className="rounded-lg bg-white/[0.03] border border-white/[0.06] p-3 space-y-2">
+            {customServices.map((svc) => (
+              <div key={svc.id} className="flex items-center justify-between gap-2 py-1">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[13px] shrink-0">🔌</span>
+                    <span className="text-[12px] text-foreground/90 truncate">{svc.name}</span>
+                  </div>
+                  <p className="text-[10.5px] text-muted-foreground/40 font-mono truncate ml-[21px]">
+                    {svc.endpoint}
+                  </p>
+                </div>
+                <button
+                  onClick={() => handleDelete(svc.id)}
+                  className="shrink-0 text-[11px] text-muted-foreground/50 hover:text-destructive transition-colors px-1.5 py-0.5 rounded hover:bg-destructive/10"
+                >
+                  删除
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Add new service */}
+        <div className="rounded-lg bg-white/[0.03] border border-white/[0.06] p-3 space-y-2">
+          <div className="flex items-center gap-2">
+            <Input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="h-8 text-[12.5px] bg-white/[0.03] flex-shrink-0 w-[120px]"
+              placeholder="服务名称"
+            />
+            <Input
+              value={endpoint}
+              onChange={(e) => setEndpoint(e.target.value)}
+              className="h-8 text-[12.5px] font-mono bg-white/[0.03] flex-1"
+              placeholder="SSE 端点地址，如 https://example.com/sse?key=xxx"
+            />
+            <Button
+              size="sm"
+              onClick={handleAdd}
+              disabled={!name.trim() || !endpoint.trim()}
+              className="h-8 text-[12px] shrink-0"
+            >
+              添加
+            </Button>
           </div>
         </div>
       </div>
