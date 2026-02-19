@@ -389,6 +389,87 @@ export async function writeFile(filePath: string, content: string): Promise<stri
   }
 }
 
+// ==================== Edit File (partial modification) ====================
+
+export async function editFile(filePath: string, oldString: string, newString: string): Promise<string> {
+  if (!filePath || filePath.trim() === '') {
+    return JSON.stringify({ error: '未提供文件路径' })
+  }
+  if (!oldString) {
+    return JSON.stringify({ error: '未提供要替换的原始文本 (old_string)' })
+  }
+  if (oldString === newString) {
+    return JSON.stringify({ error: 'old_string 与 new_string 相同，无需修改' })
+  }
+
+  const resolved = safeResolve(filePath.trim())
+  console.log('[fileTools] editFile:', resolved)
+
+  if (!isPathSafe(resolved)) {
+    return JSON.stringify({ error: `安全限制: 不允许修改系统目录下的文件` })
+  }
+
+  try {
+    const stat = await fsp.stat(resolved)
+
+    if (stat.isDirectory()) {
+      return JSON.stringify({ error: `"${resolved}" 是目录而非文件` })
+    }
+
+    if (isBinaryFile(resolved)) {
+      return JSON.stringify({ error: `不支持编辑二进制文件 (${getFileExtension(resolved)})` })
+    }
+
+    if (stat.size > MAX_READ_SIZE) {
+      return JSON.stringify({ error: `文件过大 (${(stat.size / 1024).toFixed(1)}KB)，最大支持 ${MAX_READ_SIZE / 1024}KB` })
+    }
+
+    const buffer = await fsp.readFile(resolved)
+    const content = decodeBuffer(buffer)
+
+    const occurrences = content.split(oldString).length - 1
+    if (occurrences === 0) {
+      return JSON.stringify({
+        error: '未找到要替换的文本',
+        path: resolved,
+        suggestion: '请检查 old_string 是否与文件中的内容完全一致（包括空格、换行等）',
+      })
+    }
+
+    if (occurrences > 1) {
+      return JSON.stringify({
+        error: `old_string 在文件中出现了 ${occurrences} 次，为避免误修改，请提供更长的上下文使其唯一`,
+        path: resolved,
+      })
+    }
+
+    const newContent = content.replace(oldString, newString)
+
+    if (newContent.length > MAX_WRITE_SIZE) {
+      return JSON.stringify({ error: `修改后的内容过大 (${(newContent.length / 1024).toFixed(1)}KB)` })
+    }
+
+    await fsp.writeFile(resolved, newContent, 'utf-8')
+
+    const newStat = await fsp.stat(resolved)
+    return JSON.stringify({
+      success: true,
+      path: resolved,
+      size: newStat.size,
+      lines: newContent.split('\n').length,
+      message: `文件已成功修改: ${resolved}`,
+    })
+  } catch (err: any) {
+    if (err.code === 'ENOENT') {
+      return JSON.stringify({ error: `文件不存在: ${resolved}` })
+    }
+    if (err.code === 'EPERM' || err.code === 'EACCES') {
+      return JSON.stringify({ error: `没有权限修改: ${resolved}` })
+    }
+    return JSON.stringify({ error: `编辑文件失败: ${err.message}`, path: resolved })
+  }
+}
+
 // ==================== List Directory ====================
 
 export async function listDirectory(dirPath: string): Promise<string> {

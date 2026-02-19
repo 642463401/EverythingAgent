@@ -284,8 +284,8 @@ export function SpotlightBar({ onOpenSettings, hidden }: SpotlightBarProps) {
     <div className="w-full h-full flex flex-col">
       <div className="w-full max-w-[720px] mx-auto flex flex-col h-full">
         {/* Drag handle */}
-        <div className="h-5 flex items-center justify-center select-none shrink-0 drag-region cursor-default">
-          <GripHorizontal className="w-5 h-3.5 text-white/10" />
+        <div className="h-8 flex items-center justify-center select-none shrink-0 drag-region cursor-default">
+          <GripHorizontal className="w-6 h-4 text-white/30" />
         </div>
 
         {/* Main card - fills remaining height */}

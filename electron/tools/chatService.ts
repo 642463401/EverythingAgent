@@ -6,10 +6,9 @@
 import { configManager, memoryManager } from '../configManager'
 import { searchEverything } from './everythingSearch'
 import { webSearch, webReader, isWebSearchAvailable } from './webSearch'
-import { readFile, writeFile, listDirectory, analyzeData } from './fileTools'
+import { readFile, writeFile, editFile, listDirectory, analyzeData } from './fileTools'
 import { runCommand } from './commandRunner'
 import { fileManage, openApplication, openFile, desktopControl } from './fileManager'
-import { createDocument } from './documentGenerator'
 import { mcpService } from './mcpService'
 import { lookupCity } from './cityLookup'
 import type { ModelConfig } from '../../src/types/config'
@@ -56,31 +55,38 @@ const SYSTEM_PROMPT = `你是 EverythingAgent，一个强大的 Windows 桌面 A
 3. 使用 web_search 工具联网搜索实时信息（新闻、技术文档、百科知识等）
 4. 使用 web_reader 工具读取和提取网页内容（获取文章全文、页面详情等）
 5. 使用 read_file 工具读取本地文件内容（代码、文本、配置文件、PDF 等）
-6. 使用 write_file 工具创建或写入文件（生成报告、保存内容、创建代码文件等）
-7. 使用 list_directory 工具列出目录下的文件和文件夹
-8. 使用 analyze_data 工具分析数据文件（CSV、JSON），获取统计信息和数据预览
-9. 使用 run_command 工具在用户电脑上执行系统命令（运行代码、安装依赖、执行构建、git 操作等）
-10. 帮助用户理解和管理他们的文件
-11. 使用 file_manage 工具管理文件（复制、移动、重命名、删除文件或文件夹）
-12. 使用 open_application 工具打开应用程序（通过名称打开任何已安装的应用）
-13. 使用 open_file 工具用默认或指定程序打开文件
-14. 使用 desktop_control 工具控制桌面显示（隐藏/显示桌面图标）
-15. 使用 create_document 工具生成各类文档（Word、Excel、PPT、PDF、Markdown）
+6. 使用 write_file 工具创建或写入文件（生成报告、保存内容、创建代码文件、Markdown 文档等）
+7. 使用 edit_file 工具局部修改已有文件内容（查找并替换指定文本，无需重写整个文件）
+8. 使用 list_directory 工具列出目录下的文件和文件夹
+9. 使用 analyze_data 工具分析数据文件（CSV、JSON），获取统计信息和数据预览
+10. 使用 run_command 工具在用户电脑上执行系统命令（运行代码、安装依赖、执行构建、git 操作等）
+11. 帮助用户理解和管理他们的文件
+12. 使用 file_manage 工具管理文件（复制、移动、重命名、删除文件或文件夹）
+13. 使用 open_application 工具打开应用程序（通过名称打开任何已安装的应用）
+14. 使用 open_file 工具用默认或指定程序打开文件
+15. 使用 desktop_control 工具控制桌面显示（隐藏/显示桌面图标）
 16. 使用 task_progress 工具管理复杂任务的进度（分解子任务、跟踪完成状态）
+
+文档生成策略（重要）：
+- 所有文档内容默认先生成 Markdown（.md）格式，使用 write_file 直接写入。这是最快的方式。
+- 不要使用结构化 JSON 来组织文档内容，直接在 write_file 的 content 参数中写入 Markdown 文本。
+- 当用户明确要求 Word(.docx)、Excel(.xlsx)、PPT(.pptx)、PDF(.pdf) 等 Office 格式时，先生成 .md 文件，然后告知用户可以使用 MCP 工具转换为目标格式，或调用可用的 MCP 文档转换工具。
+- 禁止对同一文件重复写入！文件写入成功后，不要再次调用 write_file 写入相同文件，除非用户明确要求修改。
+- 文件修改：当用户要求修改已有文件的部分内容时，使用 edit_file 工具进行局部替换，避免重写整个文件。如需大幅修改，先用 read_file 读取原内容，修改后再用 write_file 写入。
 
 工具使用策略：
 - 当用户要求查找文件时，使用 everything_search（全盘快速搜索）或 list_directory（浏览特定目录）。
 - 当用户需要查询实时信息时，使用 web_search 联网搜索。
 - 当用户提供 URL 并要求查看内容时，使用 web_reader 读取网页。
 - 当用户要求读取/查看某个文件内容时，使用 read_file。支持 PDF 文件自动提取文本。对于图片、音视频等二进制文件，read_file 无法读取，请告知用户。
-- 当用户要求创建纯文本文件（.md/.txt/.csv/.json/.py/.js等）时，使用 write_file。
+- 当用户要求创建文件或生成文档时，使用 write_file 直接写入 Markdown 或纯文本内容。
+- 当用户要求修改文件中的部分内容时，使用 edit_file 进行精确替换。
 - 当用户要求分析数据（CSV/JSON）时，使用 analyze_data 获取统计摘要和预览，然后给出分析结论。
 - 当用户要求运行代码、安装依赖、执行构建、git操作或任何命令行任务时，使用 run_command。
 - 当用户要求复制、移动、重命名、删除文件或创建文件夹时，使用 file_manage。
 - 当用户要求打开某个应用程序时，使用 open_application（支持中英文应用名，如"打开微信"、"打开Chrome"）。
 - 当用户要求打开某个文件时，使用 open_file（用默认程序或指定程序打开）。
 - 当用户要求隐藏/显示桌面图标时，使用 desktop_control。
-- 当用户要求生成文档（Word/PPT/Excel/PDF）时，使用 create_document。该工具会自动处理 Python 环境检测、库安装和降级为 Markdown。
 - 可以组合使用工具：先搜索文件 → 读取内容 → 分析数据 → 写入报告。
 - 搜索结果请以简洁清晰的格式展示，并标注来源。
 - 写文件前请确认路径和内容，写入后告知用户完整路径。
@@ -116,7 +122,8 @@ run_command 适用场景：运行 Python/Node.js/Java 等代码、pip install / 
 - 用友好亲切的语调回复
 
 【工作助手】当用户需要文档编写、数据分析、报告生成、会议总结等工作任务时：
-- 使用 create_document 生成专业文档（Word/PPT/Excel/PDF）
+- 使用 write_file 生成 Markdown 格式的专业文档，用户需要 Office 格式时再通过 MCP 工具转换
+- 使用 edit_file 修改已有文档的部分内容
 - 使用 analyze_data 分析数据并给出结论
 - 用专业严谨的语调回复
 
@@ -236,7 +243,7 @@ function buildTools() {
     type: 'function' as const,
     function: {
       name: 'write_file',
-      description: '创建或写入文本文件。支持 .md/.txt/.csv/.json/.html/.py/.js 等文本格式。如需创建 Office 文档（.docx/.xlsx/.pptx），请使用 create_document 工具。',
+      description: '创建或写入文本文件。适用于生成 Markdown 文档、代码文件、配置文件等。支持 .md/.txt/.csv/.json/.html/.py/.js 等文本格式。生成文档时优先使用 Markdown 格式直接写入。',
       parameters: {
         type: 'object',
         properties: {
@@ -250,6 +257,32 @@ function buildTools() {
           },
         },
         required: ['path', 'content'],
+      },
+    },
+  })
+
+  tools.push({
+    type: 'function' as const,
+    function: {
+      name: 'edit_file',
+      description: '局部修改已有文件内容。通过查找并替换指定文本来修改文件，无需重写整个文件。适用于修改文档中的某段文字、更新代码中的某行、修正错别字等。old_string 必须在文件中唯一匹配。',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: {
+            type: 'string',
+            description: '文件的绝对路径',
+          },
+          old_string: {
+            type: 'string',
+            description: '要被替换的原始文本（必须与文件中的内容完全一致，包括空格和换行）',
+          },
+          new_string: {
+            type: 'string',
+            description: '替换后的新文本',
+          },
+        },
+        required: ['path', 'old_string', 'new_string'],
       },
     },
   })
@@ -400,76 +433,6 @@ function buildTools() {
           },
         },
         required: ['action'],
-      },
-    },
-  })
-
-  tools.push({
-    type: 'function' as const,
-    function: {
-      name: 'create_document',
-      description: '生成文档文件。支持 Word(.docx)、Excel(.xlsx)、PPT(.pptx)、PDF(.pdf)、Markdown(.md)。自动处理 Python 环境检测和库安装，如果 Python 不可用会自动降级为 Markdown 格式。',
-      parameters: {
-        type: 'object',
-        properties: {
-          type: {
-            type: 'string',
-            enum: ['docx', 'xlsx', 'pptx', 'pdf', 'md'],
-            description: '文档类型',
-          },
-          outputPath: {
-            type: 'string',
-            description: '输出文件的绝对路径，例如: "C:\\Users\\user\\Desktop\\报告.pptx"',
-          },
-          content: {
-            type: 'object',
-            description: '文档内容结构',
-            properties: {
-              title: {
-                type: 'string',
-                description: '文档标题',
-              },
-              sections: {
-                type: 'array',
-                description: '文档章节（用于 docx/md/pdf）',
-                items: {
-                  type: 'object',
-                  properties: {
-                    heading: { type: 'string', description: '章节标题' },
-                    content: { type: 'string', description: '章节内容' },
-                    level: { type: 'number', description: '标题级别（1-6），默认2' },
-                  },
-                  required: ['content'],
-                },
-              },
-              slides: {
-                type: 'array',
-                description: '幻灯片列表（用于 pptx）',
-                items: {
-                  type: 'object',
-                  properties: {
-                    title: { type: 'string', description: '幻灯片标题' },
-                    content: { type: 'string', description: '幻灯片内容' },
-                    layout: { type: 'string', enum: ['title', 'content', 'two_column', 'blank'], description: '布局类型' },
-                  },
-                  required: ['title', 'content'],
-                },
-              },
-              data: {
-                type: 'array',
-                description: '表格数据（用于 xlsx），每项为一行数据对象',
-                items: {
-                  type: 'object',
-                },
-              },
-              raw_content: {
-                type: 'string',
-                description: '原始文本内容（当不需要结构化时使用）',
-              },
-            },
-          },
-        },
-        required: ['type', 'outputPath', 'content'],
       },
     },
   })
@@ -913,14 +876,15 @@ async function executeTool(name: string, argsJson: string): Promise<string> {
     }
   }
 
-  if (name === 'create_document') {
+  if (name === 'edit_file') {
     try {
       const args = JSON.parse(argsJson)
-      console.log('[Tool] create_document:', args.type, args.outputPath)
-      const result = await createDocument(args.type || '', args.outputPath || '', args.content || {})
+      console.log('[Tool] edit_file:', args.path)
+      const result = await editFile(args.path || '', args.old_string || '', args.new_string || '')
+      console.log('[Tool] edit_file result:', result)
       return result
     } catch (err: any) {
-      console.error('[Tool] create_document error:', err)
+      console.error('[Tool] edit_file error:', err)
       return JSON.stringify({ error: err.message })
     }
   }
@@ -962,6 +926,16 @@ function compressToolResult(content: string): string {
 
   try {
     const parsed = JSON.parse(content)
+
+    // File write/edit results: always preserve (small + critical for dedup)
+    if (parsed.success && parsed.path && parsed.message) {
+      return JSON.stringify({
+        success: parsed.success,
+        path: parsed.path,
+        size: parsed.size,
+        message: parsed.message,
+      })
+    }
 
     // File read results: keep path/size/lines, truncate content
     if (parsed.content && parsed.path && parsed.lines !== undefined) {
@@ -1199,6 +1173,9 @@ export async function sendChatStream(
     // Task progress state scoped to this request
     const taskPlanRef: { current: TaskPlan | null } = { current: null }
 
+    // Track files written in this conversation to prevent duplicate writes
+    const writtenFiles = new Set<string>()
+
     // Tool calling loop (max 30 iterations — supports long multi-step tasks with context compression)
     for (let i = 0; i < 30; i++) {
       // Compress old tool results before each round to free context space
@@ -1257,7 +1234,7 @@ export async function sendChatStream(
           'open_application': { icon: '🚀', label: '打开应用' },
           'open_file': { icon: '📂', label: '打开文件' },
           'desktop_control': { icon: '🖥️', label: '桌面控制' },
-          'create_document': { icon: '📝', label: '生成文档' },
+          'edit_file': { icon: '✏️', label: '修改文件' },
           'city_lookup': { icon: '🏙️', label: '查询城市' },
           'task_progress': { icon: '📋', label: '任务进度' },
           ...mcpService.getToolMeta(),
@@ -1279,8 +1256,42 @@ export async function sendChatStream(
             callbacks.onChunk(progressChunk)
             fullContent += progressChunk
           }
+        } else if (tc.name === 'write_file') {
+          // Write deduplication: warn if writing to the same file again
+          try {
+            const args = JSON.parse(tc.arguments)
+            const targetPath = args.path || ''
+            if (targetPath && writtenFiles.has(targetPath)) {
+              result = JSON.stringify({
+                warning: true,
+                path: targetPath,
+                message: `文件 "${targetPath}" 在本次对话中已写入过。如需修改，请使用 edit_file 工具进行局部修改，或确认用户确实要求重新写入。`,
+              })
+            } else {
+              result = await executeTool(tc.name, tc.arguments)
+              // Track successful writes
+              try {
+                const parsed = JSON.parse(result)
+                if (parsed.success && parsed.path) {
+                  writtenFiles.add(parsed.path)
+                  if (targetPath) writtenFiles.add(targetPath)
+                }
+              } catch { /* ignore parse errors */ }
+            }
+          } catch {
+            result = await executeTool(tc.name, tc.arguments)
+          }
         } else {
           result = await executeTool(tc.name, tc.arguments)
+          // Also track edit_file successes
+          if (tc.name === 'edit_file') {
+            try {
+              const parsed = JSON.parse(result)
+              if (parsed.success && parsed.path) {
+                writtenFiles.add(parsed.path)
+              }
+            } catch { /* ignore */ }
+          }
         }
 
         messages.push({

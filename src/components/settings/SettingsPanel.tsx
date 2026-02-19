@@ -64,8 +64,8 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
   return (
     <div className="w-full h-screen flex flex-col bg-[#1a1a1a] rounded-2xl overflow-hidden">
       {/* Drag handle - uses native drag-region to avoid setPosition bugs on Windows */}
-      <div className="flex items-center justify-center h-5 select-none drag-region cursor-default">
-        <GripHorizontal className="w-5 h-3.5 text-muted-foreground/20" />
+      <div className="flex items-center justify-center h-8 select-none drag-region cursor-default">
+        <GripHorizontal className="w-6 h-4 text-muted-foreground/40" />
       </div>
 
       {/* Header */}
