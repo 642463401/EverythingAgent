@@ -1,9 +1,10 @@
 /**
  * Everything Search integration via es.exe.
  * Uses spawn + GBK decoding to properly handle Chinese filenames on Windows.
+ * Bundles portable Everything.exe and auto-starts it when needed.
  */
 
-import { spawn } from 'node:child_process'
+import { spawn, execSync, ChildProcess } from 'node:child_process'
 import path from 'node:path'
 import fs from 'node:fs'
 import { app } from 'electron'
@@ -26,15 +27,96 @@ export interface SearchOptions {
   sortByPath?: boolean
 }
 
-function getEsExePath(): string {
+let everythingProcess: ChildProcess | null = null
+
+function getEverythingDir(): string {
   if (!app.isPackaged) {
-    return path.join(process.cwd(), 'resources', 'everything', 'es.exe')
+    return path.join(process.cwd(), 'resources', 'everything')
   }
-  return path.join(process.resourcesPath, 'everything', 'es.exe')
+  return path.join(process.resourcesPath, 'everything')
+}
+
+function getEsExePath(): string {
+  return path.join(getEverythingDir(), 'es.exe')
+}
+
+function getEverythingExePath(): string {
+  return path.join(getEverythingDir(), 'Everything.exe')
+}
+
+function isEverythingRunning(): boolean {
+  try {
+    const output = execSync('tasklist /FI "IMAGENAME eq Everything.exe" /NH', {
+      windowsHide: true,
+      encoding: 'utf-8',
+      timeout: 5000,
+    })
+    return output.toLowerCase().includes('everything.exe')
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Start the portable Everything.exe if it's not already running.
+ * Called at app startup and before searches as a safety net.
+ */
+export function ensureEverythingRunning(): boolean {
+  if (isEverythingRunning()) {
+    return true
+  }
+
+  const everythingExe = getEverythingExePath()
+  if (!fs.existsSync(everythingExe)) {
+    return false
+  }
+
+  try {
+    const dataPath = path.join(app.getPath('userData'), 'everything-data')
+    if (!fs.existsSync(dataPath)) {
+      fs.mkdirSync(dataPath, { recursive: true })
+    }
+
+    everythingProcess = spawn(everythingExe, [
+      '-startup',
+      '-minimized',
+      '-instance', 'EverythingAgent',
+      '-db', path.join(dataPath, 'Everything.db'),
+    ], {
+      windowsHide: true,
+      detached: true,
+      stdio: 'ignore',
+      cwd: getEverythingDir(),
+    })
+    everythingProcess.unref()
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Stop the portable Everything.exe instance on app quit.
+ */
+export function stopEverything(): void {
+  try {
+    const everythingExe = getEverythingExePath()
+    if (fs.existsSync(everythingExe)) {
+      spawn(everythingExe, ['-quit', '-instance', 'EverythingAgent'], {
+        windowsHide: true,
+        stdio: 'ignore',
+      })
+    }
+  } catch {
+    // Ignore errors during shutdown
+  }
+  if (everythingProcess) {
+    everythingProcess = null
+  }
 }
 
 export function isEverythingAvailable(): boolean {
-  return fs.existsSync(getEsExePath())
+  return fs.existsSync(getEsExePath()) && fs.existsSync(getEverythingExePath())
 }
 
 /**
@@ -63,6 +145,9 @@ export function searchEverything(options: SearchOptions): Promise<SearchResult[]
     if (!fs.existsSync(esPath)) {
       return reject(new Error(`es.exe not found at: ${esPath}`))
     }
+
+    // Ensure Everything.exe is running before searching
+    ensureEverythingRunning()
 
     const args: string[] = []
     args.push('-n', String(options.maxResults ?? 30))

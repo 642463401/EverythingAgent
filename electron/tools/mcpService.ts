@@ -94,6 +94,7 @@ interface McpConnection {
 class McpServiceManager {
   private connections = new Map<string, McpConnection>()
   private toolToServer = new Map<string, string>()
+  private sanitizedNameMap = new Map<string, string>() // sanitized -> original
   private initialized = false
 
   /** Check if DashScope API key is configured */
@@ -179,6 +180,7 @@ class McpServiceManager {
     }
     this.connections.clear()
     this.toolToServer.clear()
+    this.sanitizedNameMap.clear()
     this.initialized = false
   }
 
@@ -188,13 +190,26 @@ class McpServiceManager {
     await this.initialize()
   }
 
-  /** Get all MCP tools in OpenAI function-calling format */
+  /** Get all MCP tools in OpenAI function-calling format (deduplicated) */
   getToolDefinitions(): any[] {
     const tools: any[] = []
+    const seenNames = new Set<string>()
     for (const [, conn] of this.connections) {
       if (!conn.connected) continue
       for (const mcpTool of conn.tools) {
-        tools.push(this.convertToOpenAITool(mcpTool))
+        const tool = this.convertToOpenAITool(mcpTool)
+        let name = tool.function.name
+        // Deduplicate: if name already used, append a counter suffix
+        if (seenNames.has(name)) {
+          let suffix = 2
+          while (seenNames.has(`${name}_${suffix}`)) suffix++
+          const newName = `${name}_${suffix}`
+          this.sanitizedNameMap.set(newName, mcpTool.name)
+          tool.function.name = newName
+          name = newName
+        }
+        seenNames.add(name)
+        tools.push(tool)
       }
     }
     return tools
@@ -202,12 +217,14 @@ class McpServiceManager {
 
   /** Check if a tool name belongs to MCP */
   isMcpTool(toolName: string): boolean {
-    return this.toolToServer.has(toolName)
+    const originalName = this.sanitizedNameMap.get(toolName) || toolName
+    return this.toolToServer.has(originalName)
   }
 
   /** Execute an MCP tool call */
   async executeTool(toolName: string, argsJson: string): Promise<string> {
-    const serverId = this.toolToServer.get(toolName)
+    const originalName = this.sanitizedNameMap.get(toolName) || toolName
+    const serverId = this.toolToServer.get(originalName)
     if (!serverId) {
       return JSON.stringify({ error: `MCP tool not found: ${toolName}` })
     }
@@ -219,7 +236,7 @@ class McpServiceManager {
 
     try {
       const args = JSON.parse(argsJson)
-      const result = await conn.client.callTool({ name: toolName, arguments: args })
+      const result = await conn.client.callTool({ name: originalName, arguments: args })
 
       // MCP callTool returns { content: Array<{type, text}> }
       if (result.content && Array.isArray(result.content)) {
@@ -242,7 +259,8 @@ class McpServiceManager {
     for (const [, conn] of this.connections) {
       for (const mcpTool of conn.tools) {
         const serverMeta = this.getServerMeta(conn.config.id)
-        meta[mcpTool.name] = serverMeta
+        const sanitizedName = this.sanitizeToolName(mcpTool.name)
+        meta[sanitizedName] = serverMeta
       }
     }
     return meta
@@ -311,14 +329,56 @@ class McpServiceManager {
 
   /** Convert MCP tool schema to OpenAI function-calling format */
   private convertToOpenAITool(mcpTool: any): any {
+    const sanitizedName = this.sanitizeToolName(mcpTool.name)
+    if (sanitizedName !== mcpTool.name) {
+      this.sanitizedNameMap.set(sanitizedName, mcpTool.name)
+    }
+
+    // Ensure parameters has required fields for Gemini compatibility
+    const parameters = mcpTool.inputSchema || { type: 'object', properties: {} }
+    if (!parameters.type) {
+      parameters.type = 'object'
+    }
+    if (!parameters.properties) {
+      parameters.properties = {}
+    }
+
     return {
       type: 'function' as const,
       function: {
-        name: mcpTool.name,
-        description: mcpTool.description || '',
-        parameters: mcpTool.inputSchema || { type: 'object', properties: {} },
+        name: sanitizedName,
+        description: mcpTool.description || sanitizedName,
+        parameters,
       },
     }
+  }
+
+  /**
+   * Sanitize tool name for providers with strict naming rules (e.g. Google Gemini).
+   * Allowed: a-z, A-Z, 0-9, underscore. Must start with letter or underscore.
+   */
+  private sanitizeToolName(name: string): string {
+    if (!name) return `mcp_tool_${Date.now()}`
+    let sanitized = name.replace(/[^a-zA-Z0-9_]/g, '_')
+    // Collapse consecutive underscores
+    sanitized = sanitized.replace(/_+/g, '_')
+    // Trim trailing underscores
+    sanitized = sanitized.replace(/_+$/, '')
+    // Trim leading underscores (except one)
+    sanitized = sanitized.replace(/^_+/, '_')
+    // Ensure starts with letter or underscore
+    if (sanitized && !/^[a-zA-Z_]/.test(sanitized)) {
+      sanitized = 'mcp_' + sanitized
+    }
+    // Truncate to 64 chars
+    if (sanitized.length > 64) {
+      sanitized = sanitized.slice(0, 64)
+    }
+    // If still empty or just underscore, generate a unique name
+    if (!sanitized || sanitized === '_') {
+      sanitized = `mcp_tool_${Date.now()}`
+    }
+    return sanitized
   }
 
   /** Get display metadata per server */

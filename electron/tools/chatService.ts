@@ -3,6 +3,7 @@
  * The AI can autonomously invoke Everything search via OpenAI-compatible function calling.
  */
 
+import fs from 'node:fs'
 import { configManager, memoryManager } from '../configManager'
 import { searchEverything } from './everythingSearch'
 import { webSearch, webReader, isWebSearchAvailable } from './webSearch'
@@ -71,8 +72,10 @@ const SYSTEM_PROMPT = `你是 EverythingAgent，一个强大的 Windows 桌面 A
 - 所有文档内容默认先生成 Markdown（.md）格式，使用 write_file 直接写入。这是最快的方式。
 - 不要使用结构化 JSON 来组织文档内容，直接在 write_file 的 content 参数中写入 Markdown 文本。
 - 当用户明确要求 Word(.docx)、Excel(.xlsx)、PPT(.pptx)、PDF(.pdf) 等 Office 格式时，先生成 .md 文件，然后告知用户可以使用 MCP 工具转换为目标格式，或调用可用的 MCP 文档转换工具。
-- 禁止对同一文件重复写入！文件写入成功后，不要再次调用 write_file 写入相同文件，除非用户明确要求修改。
-- 文件修改：当用户要求修改已有文件的部分内容时，使用 edit_file 工具进行局部替换，避免重写整个文件。如需大幅修改，先用 read_file 读取原内容，修改后再用 write_file 写入。
+- 文件写入成功后，避免对同一文件无意义的重复写入（如内容完全相同的重写）。
+- 文件修改：当用户要求修改已有文件的部分内容时，优先使用 edit_file 工具进行局部替换。如果 edit_file 返回错误（如未找到匹配文本），应先用 read_file 重新读取文件最新内容，然后重试 edit_file 或改用 write_file 写入完整的修改后内容。
+- 重要：当工具返回结果中包含 "success": false 或 "warning": true 时，说明操作未成功执行，不要向用户报告操作成功。必须检查工具返回的 success 字段来确认操作是否真正完成。
+- 当用户要求重新生成或删除后重新创建文件时，直接使用 write_file 写入即可，系统会自动处理。
 
 工具使用策略：
 - 当用户要求查找文件时，使用 everything_search（全盘快速搜索）或 list_directory（浏览特定目录）。
@@ -113,6 +116,13 @@ run_command 适用场景：运行 Python/Node.js/Java 等代码、pip install / 
 - 读取大文件时，关注关键信息并在 task_progress 的 result 中记录要点，而不是依赖原始内容在后续步骤中仍然可用。
 - 每个子任务应尽量自包含：完成后记录要点摘要，后续步骤可以依赖摘要而非原始数据。
 - 如果任务超出你的处理能力，诚实告知用户并建议拆分为多次对话。
+
+工具调用严格要求（极其重要，必须遵守）：
+- 你必须通过实际调用工具来执行操作。禁止在没有调用工具的情况下声称已完成文件创建、修改或删除操作。
+- 每次用户要求创建文件时，必须调用 write_file 工具并传入完整的文件内容。即使你之前在对话中创建过该文件，也必须重新调用 write_file 并写入完整内容。
+- 每次用户要求修改文件时，必须调用 edit_file 或 write_file 工具。不要假设之前的修改仍然有效。
+- 对话历史中的工具调用结果仅供参考，不代表文件当前状态。文件可能已被用户手动删除、移动或修改。
+- 如果 edit_file 失败（如未找到匹配文本），必须先调用 read_file 读取文件当前内容，然后根据实际内容重新调用 edit_file 或改用 write_file 重写完整内容。
 
 你可以根据用户的需求自动切换为以下专家模式，在回复开头用 [模式名] 标注当前模式：
 
@@ -265,7 +275,7 @@ function buildTools() {
     type: 'function' as const,
     function: {
       name: 'edit_file',
-      description: '局部修改已有文件内容。通过查找并替换指定文本来修改文件，无需重写整个文件。适用于修改文档中的某段文字、更新代码中的某行、修正错别字等。old_string 必须在文件中唯一匹配。',
+      description: '局部修改已有文件内容。通过查找并替换指定文本来修改文件，无需重写整个文件。适用于修改文档中的某段文字、更新代码中的某行、修正错别字等。old_string 必须在文件中唯一匹配。重要：使用前必须先用 read_file 读取文件的当前内容，确保 old_string 与文件中的实际文本完全一致。不要依赖对话历史中的旧内容。如果匹配失败，先 read_file 重新读取再重试。',
       parameters: {
         type: 'object',
         properties: {
@@ -504,8 +514,15 @@ function buildTools() {
 
   // ==================== MCP Tools (dynamic, from connected MCP servers) ====================
   if (mcpService.isDashScopeConfigured()) {
+    const builtinNames = new Set(tools.map((t: any) => t.function.name))
     const mcpTools = mcpService.getToolDefinitions()
-    tools.push(...mcpTools)
+    for (const mcpTool of mcpTools) {
+      const name = mcpTool.function?.name
+      if (name && !builtinNames.has(name)) {
+        tools.push(mcpTool)
+        builtinNames.add(name)
+      }
+    }
   }
 
   return tools
@@ -518,10 +535,20 @@ function getActiveModel(): ModelConfig | null {
   return model
 }
 
-function buildChatUrl(baseUrl: string): string {
+function buildChatUrl(baseUrl: string, providerType?: string): string {
   let url = baseUrl.trim()
   if (url.endsWith('/')) url = url.slice(0, -1)
   if (url.endsWith('/chat/completions')) return url
+
+  // Google AI: use OpenAI-compatible endpoint
+  if (
+    providerType === 'google' &&
+    url.includes('generativelanguage.googleapis.com') &&
+    !url.includes('/openai')
+  ) {
+    url = url + '/openai'
+  }
+
   if (url.endsWith('/v1')) return `${url}/chat/completions`
   return `${url}/chat/completions`
 }
@@ -928,9 +955,10 @@ function compressToolResult(content: string): string {
     const parsed = JSON.parse(content)
 
     // File write/edit results: always preserve (small + critical for dedup)
-    if (parsed.success && parsed.path && parsed.message) {
+    if (parsed.path && parsed.message) {
       return JSON.stringify({
         success: parsed.success,
+        warning: parsed.warning,
         path: parsed.path,
         size: parsed.size,
         message: parsed.message,
@@ -1014,6 +1042,30 @@ function compressMessages(messages: ChatRequestMessage[]): void {
   for (let i = 0; i < lastToolRoundStart; i++) {
     if (messages[i].role === 'tool' && messages[i].content) {
       messages[i].content = compressToolResult(messages[i].content!)
+    }
+    // Also compress large tool_call arguments (e.g., write_file content) in old assistant messages
+    if (messages[i].role === 'assistant' && messages[i].tool_calls) {
+      for (const tc of messages[i].tool_calls!) {
+        const fn = (tc as any).function || tc
+        const fnName = fn.name || ''
+        if ((fnName === 'write_file' || fnName === 'edit_file') && fn.arguments) {
+          try {
+            const args = JSON.parse(fn.arguments)
+            if (args.content && args.content.length > 200) {
+              args.content = args.content.slice(0, 100) + `... [内容已压缩，原始${args.content.length}字符]`
+              fn.arguments = JSON.stringify(args)
+            }
+            if (args.old_string && args.old_string.length > 200) {
+              args.old_string = args.old_string.slice(0, 100) + '... [已压缩]'
+              fn.arguments = JSON.stringify(args)
+            }
+            if (args.new_string && args.new_string.length > 200) {
+              args.new_string = args.new_string.slice(0, 100) + '... [已压缩]'
+              fn.arguments = JSON.stringify(args)
+            }
+          } catch { /* ignore parse errors */ }
+        }
+      }
     }
   }
 }
@@ -1134,7 +1186,7 @@ export async function sendChatStream(
   const controller = new AbortController()
   activeRequests.set(requestId, controller)
 
-  const url = buildChatUrl(model.baseUrl)
+  const url = buildChatUrl(model.baseUrl, model.providerType)
   const headers = {
     'Content-Type': 'application/json',
     'Authorization': `Bearer ${model.apiKey}`,
@@ -1257,17 +1309,25 @@ export async function sendChatStream(
             fullContent += progressChunk
           }
         } else if (tc.name === 'write_file') {
-          // Write deduplication: warn if writing to the same file again
+          // Write deduplication: warn if writing the exact same file again
           try {
             const args = JSON.parse(tc.arguments)
             const targetPath = args.path || ''
-            if (targetPath && writtenFiles.has(targetPath)) {
+            // Only block if file was written before AND still exists on disk
+            if (targetPath && writtenFiles.has(targetPath) && fs.existsSync(targetPath)) {
               result = JSON.stringify({
+                success: false,
                 warning: true,
                 path: targetPath,
-                message: `文件 "${targetPath}" 在本次对话中已写入过。如需修改，请使用 edit_file 工具进行局部修改，或确认用户确实要求重新写入。`,
+                message: `注意：文件 "${targetPath}" 未被写入！该文件在本次对话中已写入过。如需修改内容，请使用 edit_file 工具进行局部替换，或使用 write_file 写入不同的文件名。如果是用户要求重新生成或大幅修改，请直接再次调用 write_file（系统将允许覆盖）。`,
               })
+              // Remove from set so the NEXT write_file call for this path will go through
+              writtenFiles.delete(targetPath)
             } else {
+              // File was deleted or never written — allow write
+              if (targetPath && writtenFiles.has(targetPath)) {
+                writtenFiles.delete(targetPath)
+              }
               result = await executeTool(tc.name, tc.arguments)
               // Track successful writes
               try {
@@ -1292,6 +1352,24 @@ export async function sendChatStream(
               }
             } catch { /* ignore */ }
           }
+          // Remove from writtenFiles when file is deleted/moved/renamed
+          if (tc.name === 'file_manage') {
+            try {
+              const args = JSON.parse(tc.arguments)
+              const parsed = JSON.parse(result)
+              if (parsed.success) {
+                const op = (args.operation || '').toLowerCase()
+                if (op === 'delete' || op === 'move' || op === 'rename') {
+                  const srcPath = args.source || ''
+                  if (srcPath) {
+                    writtenFiles.delete(srcPath)
+                    // Also try the resolved path from the result
+                    if (parsed.source) writtenFiles.delete(parsed.source)
+                  }
+                }
+              }
+            } catch { /* ignore */ }
+          }
         }
 
         messages.push({
@@ -1299,6 +1377,23 @@ export async function sendChatStream(
           content: result,
           tool_call_id: tc.id,
         })
+
+        // Show write/edit result status to user for transparency
+        if (tc.name === 'write_file' || tc.name === 'edit_file') {
+          try {
+            const parsed = JSON.parse(result)
+            if (parsed.success) {
+              const sizeKB = parsed.size ? ` (${(parsed.size / 1024).toFixed(1)}KB)` : ''
+              const statusMsg = `\n✅ ${tc.name === 'write_file' ? '文件已写入' : '文件已修改'}: ${parsed.path}${sizeKB}\n`
+              callbacks.onChunk(statusMsg)
+              fullContent += statusMsg
+            } else if (parsed.warning || parsed.error) {
+              const statusMsg = `\n⚠️ ${parsed.message || parsed.error || '操作未成功'}\n`
+              callbacks.onChunk(statusMsg)
+              fullContent += statusMsg
+            }
+          } catch { /* ignore */ }
+        }
       }
 
       // Continue loop - next iteration will get the AI's response with tool results

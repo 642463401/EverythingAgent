@@ -43,7 +43,7 @@ const providerOptions: { value: ProviderType; label: string; placeholder: string
   {
     value: 'google',
     label: 'Google AI',
-    placeholder: 'https://generativelanguage.googleapis.com/v1beta',
+    placeholder: 'https://generativelanguage.googleapis.com/v1beta/openai',
   },
 ]
 
@@ -52,7 +52,7 @@ const modelSuggestions: Record<ProviderType, string[]> = {
   aliyun: ['qwen-max', 'qwen-plus', 'qwen-turbo', 'qwen-long'],
   dashscope: ['qwen-max', 'qwen-max-latest', 'qwen-plus', 'qwen-plus-latest', 'qwen-turbo', 'qwen-turbo-latest', 'qwen-long', 'qwen-vl-max', 'qwen-vl-plus', 'qwen2.5-72b-instruct', 'qwen2.5-coder-32b-instruct'],
   anthropic: ['claude-3-5-sonnet-20241022', 'claude-3-opus-20240229', 'claude-3-haiku-20240307'],
-  google: ['gemini-pro', 'gemini-1.5-pro', 'gemini-1.5-flash'],
+  google: ['gemini-2.5-flash-preview-05-20', 'gemini-2.5-pro-preview-05-06', 'gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-1.5-pro', 'gemini-1.5-flash'],
 }
 
 export function ModelProviderForm({ model, onSave, onCancel }: ModelProviderFormProps) {
@@ -88,8 +88,17 @@ export function ModelProviderForm({ model, onSave, onCancel }: ModelProviderForm
     setTestStatus('testing')
 
     try {
-      // Simple connectivity test: hit the models endpoint
-      const url = formData.baseUrl.replace(/\/+$/, '') + '/models'
+      // Build test URL based on provider type
+      let testBase = formData.baseUrl.replace(/\/+$/, '')
+      // Google AI: ensure /openai path for OpenAI-compatible endpoint
+      if (
+        formData.providerType === 'google' &&
+        testBase.includes('generativelanguage.googleapis.com') &&
+        !testBase.includes('/openai')
+      ) {
+        testBase = testBase + '/openai'
+      }
+      const url = testBase + '/models'
       const response = await fetch(url, {
         method: 'GET',
         headers: {

@@ -11,7 +11,7 @@ import {
 import path from 'node:path'
 import { configManager, conversationManager, memoryManager } from './configManager'
 import { IPC_CHANNELS } from '../src/types/config'
-import { searchEverything, isEverythingAvailable, openSearchResult, revealInExplorer } from './tools/everythingSearch'
+import { searchEverything, isEverythingAvailable, openSearchResult, revealInExplorer, ensureEverythingRunning, stopEverything } from './tools/everythingSearch'
 import { sendChatStream, abortChatRequest } from './tools/chatService'
 import { mcpService } from './tools/mcpService'
 
@@ -350,12 +350,20 @@ app.on('ready', () => {
   createTray()
   setupIPC()
   registerGlobalShortcut()
+
+  // Start portable Everything.exe in the background
+  if (isEverythingAvailable()) {
+    ensureEverythingRunning()
+    console.log('[main] Everything portable started')
+  }
+
   setTimeout(() => showWindow(), 500)
 })
 
 app.on('window-all-closed', () => { /* keep running in tray */ })
 app.on('will-quit', () => {
   globalShortcut.unregisterAll()
+  stopEverything()
   mcpService.shutdown().catch(() => {})
 })
 app.on('activate', () => { if (!mainWindow) createWindow() })

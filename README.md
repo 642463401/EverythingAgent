@@ -26,7 +26,7 @@
 
 ### Everything 本地搜索
 
-- 内置 `es.exe` 命令行工具，调用 [Everything](https://www.voidtools.com/) 实现毫秒级文件名搜索
+- 内置 [Everything](https://www.voidtools.com/) 便携版，无需单独安装，应用启动时自动在后台运行
 - 在输入栏输入 `>` 前缀即可触发搜索（也支持 `find:` / `search:` 前缀）
 - 实时搜索（250ms 防抖）+ 键盘上下导航 + 文件类型图标
 - `Enter` 打开文件 / `Ctrl+Enter` 在资源管理器中定位
@@ -127,7 +127,7 @@
 | 动画 | Framer Motion 12 |
 | UI 组件 | shadcn/ui (Radix UI) |
 | 配置持久化 | electron-store (加密 JSON) |
-| 本地搜索 | Everything es.exe (child_process) |
+| 本地搜索 | Everything 便携版 (自动启停) + es.exe (child_process) |
 | 联网搜索 | 秘塔 AI REST API |
 | 命令执行 | child_process.spawn + GBK 解码 |
 | 打包 | electron-builder → NSIS .exe 安装程序 |
@@ -175,7 +175,9 @@ EverythingAgent/
 │       └── config.ts            #   TypeScript 类型定义 + IPC 通道
 ├── resources/
 │   └── everything/
-│       └── es.exe               #   Everything CLI 工具
+│       ├── Everything.exe          #   Everything 便携版主程序
+│       ├── Everything.lng          #   Everything 语言文件
+│       └── es.exe                  #   Everything CLI 搜索工具
 ├── index.html
 ├── vite.config.ts
 ├── tailwind.config.js
@@ -190,7 +192,6 @@ EverythingAgent/
 
 - **Node.js** >= 18
 - **Windows** 操作系统
-- [**Everything**](https://www.voidtools.com/) 已安装并在后台运行（用于本地文件搜索功能）
 - **Python** >= 3.8（可选，用于生成 Office 文档；未安装时自动回退为 Markdown）
 
 ### 安装依赖

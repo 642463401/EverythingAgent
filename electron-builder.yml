@@ -21,9 +21,6 @@ extraResources:
       - "**/*"
   - from: build/icon.ico
     to: icon.ico
-  # 打包 Everything 安装程序，安装时引导用户安装
-  - from: Everything-1.4.1.1032.x64-Setup.exe
-    to: Everything-Setup.exe
 
 win:
   target:
