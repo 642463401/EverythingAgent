@@ -1,5 +1,5 @@
 import Store from 'electron-store'
-import type { AppConfig, ModelConfig, AppSettings, Conversation, Memory } from '../src/types/config'
+import type { AppConfig, ModelConfig, AppSettings, Conversation, Memory, SubAgentState } from '../src/types/config'
 import { app } from 'electron'
 import path from 'node:path'
 
@@ -267,4 +267,55 @@ class MemoryManager {
 }
 
 export const memoryManager = new MemoryManager()
+
+// ==================== SubAgent Storage ====================
+
+const MAX_SUBAGENTS = 20
+const SUBAGENT_MAX_AGE_DAYS = 7
+
+class SubAgentManager {
+  private store: Store<{ subAgents: SubAgentState[] }>
+
+  constructor() {
+    this.store = new Store<{ subAgents: SubAgentState[] }>({
+      name: 'everything-agent-subagents',
+      defaults: { subAgents: [] },
+    })
+  }
+
+  getAgents(): SubAgentState[] {
+    return this.store.get('subAgents', [])
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+  }
+
+  getAgent(id: string): SubAgentState | undefined {
+    return this.store.get('subAgents', []).find((a) => a.id === id)
+  }
+
+  saveAgent(agent: SubAgentState): void {
+    const agents = this.store.get('subAgents', [])
+    const index = agents.findIndex((a) => a.id === agent.id)
+    if (index !== -1) {
+      agents[index] = agent
+    } else {
+      agents.unshift(agent)
+    }
+    // Keep only the most recent sub-agents
+    this.store.set('subAgents', agents.slice(0, MAX_SUBAGENTS))
+  }
+
+  deleteAgent(id: string): void {
+    const agents = this.store.get('subAgents', []).filter((a) => a.id !== id)
+    this.store.set('subAgents', agents)
+  }
+
+  cleanupOldAgents(): void {
+    const cutoff = Date.now() - SUBAGENT_MAX_AGE_DAYS * 24 * 60 * 60 * 1000
+    const agents = this.store.get('subAgents', []).filter((a) => a.updatedAt > cutoff)
+    this.store.set('subAgents', agents)
+  }
+}
+
+export const subAgentManager = new SubAgentManager()
+
 export default configManager

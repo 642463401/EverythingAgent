@@ -3,7 +3,6 @@
  * The AI can autonomously invoke Everything search via OpenAI-compatible function calling.
  */
 
-import fs from 'node:fs'
 import { configManager, memoryManager } from '../configManager'
 import { searchEverything } from './everythingSearch'
 import { webSearch, webReader, isWebSearchAvailable } from './webSearch'
@@ -12,14 +11,19 @@ import { runCommand } from './commandRunner'
 import { fileManage, openApplication, openFile, desktopControl } from './fileManager'
 import { mcpService } from './mcpService'
 import { lookupCity } from './cityLookup'
-import type { ModelConfig } from '../../src/types/config'
+import type { ModelConfig, ChatRequestMessage } from '../../src/types/config'
 
-export interface ChatRequestMessage {
-  role: 'user' | 'assistant' | 'system' | 'tool'
-  content: string | null
-  tool_calls?: any[]
-  tool_call_id?: string
+// Lazy import to avoid circular dependency (subAgentService imports from chatService)
+let _subAgentService: typeof import('./subAgentService')['subAgentService'] | null = null
+async function getSubAgentService() {
+  if (!_subAgentService) {
+    const mod = await import('./subAgentService')
+    _subAgentService = mod.subAgentService
+  }
+  return _subAgentService
 }
+
+export type { ChatRequestMessage }
 
 export interface ChatStreamCallbacks {
   onChunk: (content: string) => void
@@ -27,7 +31,7 @@ export interface ChatStreamCallbacks {
   onError: (error: string) => void
 }
 
-interface AccumulatedToolCall {
+export interface AccumulatedToolCall {
   id: string
   name: string
   arguments: string
@@ -72,7 +76,7 @@ const SYSTEM_PROMPT = `你是 EverythingAgent，一个强大的 Windows 桌面 A
 - 所有文档内容默认先生成 Markdown（.md）格式，使用 write_file 直接写入。这是最快的方式。
 - 不要使用结构化 JSON 来组织文档内容，直接在 write_file 的 content 参数中写入 Markdown 文本。
 - 当用户明确要求 Word(.docx)、Excel(.xlsx)、PPT(.pptx)、PDF(.pdf) 等 Office 格式时，先生成 .md 文件，然后告知用户可以使用 MCP 工具转换为目标格式，或调用可用的 MCP 文档转换工具。
-- 文件写入成功后，避免对同一文件无意义的重复写入（如内容完全相同的重写）。
+- 文件写入成功后，如果用户要求重新生成或修改，直接执行操作，不要因为之前写入过而跳过。
 - 文件修改：当用户要求修改已有文件的部分内容时，优先使用 edit_file 工具进行局部替换。如果 edit_file 返回错误（如未找到匹配文本），应先用 read_file 重新读取文件最新内容，然后重试 edit_file 或改用 write_file 写入完整的修改后内容。
 - 重要：当工具返回结果中包含 "success": false 或 "warning": true 时，说明操作未成功执行，不要向用户报告操作成功。必须检查工具返回的 success 字段来确认操作是否真正完成。
 - 当用户要求重新生成或删除后重新创建文件时，直接使用 write_file 写入即可，系统会自动处理。
@@ -147,9 +151,27 @@ run_command 适用场景：运行 Python/Node.js/Java 等代码、pip install / 
 - 操作前简要确认意图，操作后报告结果
 - 用高效直接的语调回复
 
-当任务跨越多个领域时（如"分析这个CSV然后生成PPT报告"），灵活组合多个模式的能力来完成。`
+当任务跨越多个领域时（如"分析这个CSV然后生成PPT报告"），灵活组合多个模式的能力来完成。
 
-function buildTools() {
+任务委派规则（重要）：
+你拥有 delegate_task 工具，可以将任务委派给独立的执行助手。执行助手在全新的上下文中运行，不受当前对话历史影响，确保每个操作都被真正执行。
+
+何时使用 delegate_task：
+- 涉及 2 个以上步骤的文件操作（如：读取→修改→验证、批量创建文件、项目搭建）
+- 用户要求"重新执行"、"再做一次"、"重新生成"之前做过的操作
+- 复杂的编码工作流（浏览→读取→编写→运行→修复）
+- 批量文件管理（复制/移动/重命名多个文件）
+
+何时直接执行（不委派）：
+- 简单的单步操作：读取一个文件、搜索文件、列出目录、打开应用
+- 简单的问答和信息查询
+- 单个文件的创建或修改（当你确信可以一次完成时）
+
+恢复执行助手：
+- 当用户要求在之前的操作基础上继续修改（如"把刚才创建的文件再加个功能"），使用 resume_agent 恢复之前的执行助手
+- 执行助手的 ID 会在 delegate_task 的返回结果中提供`
+
+export function buildTools() {
   const tools: any[] = [
     {
       type: 'function' as const,
@@ -512,6 +534,51 @@ function buildTools() {
     },
   })
 
+  // ==================== SubAgent Delegation Tools ====================
+  tools.push({
+    type: 'function' as const,
+    function: {
+      name: 'delegate_task',
+      description: '将多步骤任务委派给独立的执行助手。执行助手在隔离环境中运行，不受当前对话历史影响，确保每个操作都被真正执行。适用于：多文件创建/修改、批量操作、需要"重新执行"的任务、复杂编码工作流。',
+      parameters: {
+        type: 'object',
+        properties: {
+          task: {
+            type: 'string',
+            description: '要执行的任务描述，必须清晰具体，包含所有必要信息（文件路径、内容要求等）',
+          },
+          context: {
+            type: 'string',
+            description: '可选。提供给执行助手的上下文信息，如之前步骤的结果、相关文件内容等',
+          },
+        },
+        required: ['task'],
+      },
+    },
+  })
+
+  tools.push({
+    type: 'function' as const,
+    function: {
+      name: 'resume_agent',
+      description: '恢复之前的执行助手继续工作。当需要在之前的操作基础上继续修改时使用。执行助手的 ID 来自上次 delegate_task 的返回结果。',
+      parameters: {
+        type: 'object',
+        properties: {
+          agent_id: {
+            type: 'string',
+            description: '要恢复的执行助手 ID',
+          },
+          additional_task: {
+            type: 'string',
+            description: '新的任务指令',
+          },
+        },
+        required: ['agent_id', 'additional_task'],
+      },
+    },
+  })
+
   // ==================== MCP Tools (dynamic, from connected MCP servers) ====================
   if (mcpService.isDashScopeConfigured()) {
     const builtinNames = new Set(tools.map((t: any) => t.function.name))
@@ -528,14 +595,14 @@ function buildTools() {
   return tools
 }
 
-function getActiveModel(): ModelConfig | null {
+export function getActiveModel(): ModelConfig | null {
   const model = configManager.getActiveModel()
   if (!model) return null
   if (!model.baseUrl || !model.apiKey || !model.modelName) return null
   return model
 }
 
-function buildChatUrl(baseUrl: string, providerType?: string): string {
+export function buildChatUrl(baseUrl: string, providerType?: string): string {
   let url = baseUrl.trim()
   if (url.endsWith('/')) url = url.slice(0, -1)
   if (url.endsWith('/chat/completions')) return url
@@ -577,7 +644,7 @@ ${lines.join('\n')}`
 /**
  * Parse a single streaming round. Returns accumulated content and tool calls.
  */
-async function streamOneRound(
+export async function streamOneRound(
   url: string,
   headers: Record<string, string>,
   model: string,
@@ -739,7 +806,7 @@ function executeTaskProgress(planRef: { current: TaskPlan | null }, argsJson: st
 /**
  * Execute a tool call and return the result as a string.
  */
-async function executeTool(name: string, argsJson: string): Promise<string> {
+export async function executeTool(name: string, argsJson: string): Promise<string> {
   if (name === 'everything_search') {
     try {
       const args = JSON.parse(argsJson)
@@ -1024,7 +1091,7 @@ function compressToolResult(content: string): string {
   }
 }
 
-function compressMessages(messages: ChatRequestMessage[]): void {
+export function compressMessages(messages: ChatRequestMessage[]): void {
   if (messages.length <= COMPRESSION_THRESHOLD) return
 
   // Find start of most recent tool-calling round (keep it uncompressed)
@@ -1225,9 +1292,6 @@ export async function sendChatStream(
     // Task progress state scoped to this request
     const taskPlanRef: { current: TaskPlan | null } = { current: null }
 
-    // Track files written in this conversation to prevent duplicate writes
-    const writtenFiles = new Set<string>()
-
     // Tool calling loop (max 30 iterations — supports long multi-step tasks with context compression)
     for (let i = 0; i < 30; i++) {
       // Compress old tool results before each round to free context space
@@ -1289,6 +1353,8 @@ export async function sendChatStream(
           'edit_file': { icon: '✏️', label: '修改文件' },
           'city_lookup': { icon: '🏙️', label: '查询城市' },
           'task_progress': { icon: '📋', label: '任务进度' },
+          'delegate_task': { icon: '🤖', label: '委派任务' },
+          'resume_agent': { icon: '🔄', label: '恢复助手' },
           ...mcpService.getToolMeta(),
         }
 
@@ -1308,68 +1374,34 @@ export async function sendChatStream(
             callbacks.onChunk(progressChunk)
             fullContent += progressChunk
           }
-        } else if (tc.name === 'write_file') {
-          // Write deduplication: warn if writing the exact same file again
+        } else if (tc.name === 'delegate_task') {
           try {
             const args = JSON.parse(tc.arguments)
-            const targetPath = args.path || ''
-            // Only block if file was written before AND still exists on disk
-            if (targetPath && writtenFiles.has(targetPath) && fs.existsSync(targetPath)) {
-              result = JSON.stringify({
-                success: false,
-                warning: true,
-                path: targetPath,
-                message: `注意：文件 "${targetPath}" 未被写入！该文件在本次对话中已写入过。如需修改内容，请使用 edit_file 工具进行局部替换，或使用 write_file 写入不同的文件名。如果是用户要求重新生成或大幅修改，请直接再次调用 write_file（系统将允许覆盖）。`,
-              })
-              // Remove from set so the NEXT write_file call for this path will go through
-              writtenFiles.delete(targetPath)
-            } else {
-              // File was deleted or never written — allow write
-              if (targetPath && writtenFiles.has(targetPath)) {
-                writtenFiles.delete(targetPath)
-              }
-              result = await executeTool(tc.name, tc.arguments)
-              // Track successful writes
-              try {
-                const parsed = JSON.parse(result)
-                if (parsed.success && parsed.path) {
-                  writtenFiles.add(parsed.path)
-                  if (targetPath) writtenFiles.add(targetPath)
-                }
-              } catch { /* ignore parse errors */ }
-            }
-          } catch {
-            result = await executeTool(tc.name, tc.arguments)
+            const sas = await getSubAgentService()
+            const subResult = await sas.executeTask(
+              args.task || '',
+              args.context,
+              callbacks,
+            )
+            result = JSON.stringify(subResult)
+          } catch (err: any) {
+            result = JSON.stringify({ success: false, error: err.message })
+          }
+        } else if (tc.name === 'resume_agent') {
+          try {
+            const args = JSON.parse(tc.arguments)
+            const sas = await getSubAgentService()
+            const subResult = await sas.resumeAgent(
+              args.agent_id || '',
+              args.additional_task || '',
+              callbacks,
+            )
+            result = JSON.stringify(subResult)
+          } catch (err: any) {
+            result = JSON.stringify({ success: false, error: err.message })
           }
         } else {
           result = await executeTool(tc.name, tc.arguments)
-          // Also track edit_file successes
-          if (tc.name === 'edit_file') {
-            try {
-              const parsed = JSON.parse(result)
-              if (parsed.success && parsed.path) {
-                writtenFiles.add(parsed.path)
-              }
-            } catch { /* ignore */ }
-          }
-          // Remove from writtenFiles when file is deleted/moved/renamed
-          if (tc.name === 'file_manage') {
-            try {
-              const args = JSON.parse(tc.arguments)
-              const parsed = JSON.parse(result)
-              if (parsed.success) {
-                const op = (args.operation || '').toLowerCase()
-                if (op === 'delete' || op === 'move' || op === 'rename') {
-                  const srcPath = args.source || ''
-                  if (srcPath) {
-                    writtenFiles.delete(srcPath)
-                    // Also try the resolved path from the result
-                    if (parsed.source) writtenFiles.delete(parsed.source)
-                  }
-                }
-              }
-            } catch { /* ignore */ }
-          }
         }
 
         messages.push({
