@@ -65,6 +65,35 @@ export interface Memory {
   updatedAt: number
 }
 
+/** Chat request message (used internally by chat service and sub-agents) */
+export interface ChatRequestMessage {
+  role: 'user' | 'assistant' | 'system' | 'tool'
+  content: string | null
+  tool_calls?: any[]
+  tool_call_id?: string
+}
+
+/** SubAgent state for cross-session persistence */
+export interface SubAgentState {
+  id: string
+  name: string
+  messages: ChatRequestMessage[]
+  status: 'running' | 'completed' | 'failed'
+  result: string | null
+  filesAffected: string[]
+  createdAt: number
+  updatedAt: number
+}
+
+/** SubAgent execution result returned to main agent */
+export interface SubAgentResult {
+  agentId: string
+  success: boolean
+  summary: string
+  filesAffected: string[]
+  error?: string
+}
+
 /** Everything Search result */
 export interface SearchResult {
   fullPath: string
