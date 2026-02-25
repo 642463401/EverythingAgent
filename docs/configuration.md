@@ -57,12 +57,12 @@ npm install
 ```
 
 #### 3. 图标配置（重要）
-项目使用 `logo.png` 作为应用图标，构建时会自动转换为 Windows ICO 格式：
+项目使用 `build/logo.png` 作为应用图标，构建时会自动转换为 Windows ICO 格式：
 ```cmd
 npm run build:icon
 ```
 此命令会：
-- 读取项目根目录的 `logo.png`
+- 读取 `build/logo.png`
 - 生成多尺寸 ICO 文件
 - 输出到 `build/icon.ico`
 
@@ -109,7 +109,7 @@ npm run build
 ### 图标文件要求
 - **文件格式**：PNG 格式
 - **推荐尺寸**：512x512 像素（正方形）
-- **文件位置**：项目根目录下的 `logo.png`
+- **文件位置**：`build/logo.png`
 - **透明背景**：建议使用透明背景以获得最佳效果
 
 ### 自动图标转换
@@ -119,7 +119,7 @@ npm run build
    ```cmd
    npm run build:icon
    ```
-   - 将 `logo.png` 转换为 Windows ICO 格式
+   - 将 `build/logo.png` 转换为 Windows ICO 格式
    - 生成多尺寸图标（16x16 到 256x256）
    - 输出到 `build/icon.ico`
 
@@ -134,7 +134,7 @@ npm run build
 如果需要更换图标：
 
 1. 准备新的 PNG 图标文件
-2. 替换项目根目录的 `logo.png`
+2. 替换 `build/logo.png`
 3. 重新运行图标转换：
    ```cmd
    npm run build:icon

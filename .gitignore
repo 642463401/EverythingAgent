@@ -16,3 +16,4 @@ nul
 
 # Installers & binary artifacts
 *.exe
+*.zip
