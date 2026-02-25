@@ -6,7 +6,7 @@ async function convertLogoToIcon() {
   try {
     console.log('🔄 正在转换 logo.png 为 Windows ICO 格式...');
     
-    const inputPath = './logo.png';
+    const inputPath = './build/logo.png';
     const outputPath = './build/icon.ico';
     
     // 检查输入文件是否存在
