@@ -9,12 +9,12 @@
 import { subAgentManager } from '../configManager'
 import {
   getActiveModel,
-  buildChatUrl,
   buildTools,
-  streamOneRound,
   executeTool,
   compressMessages,
 } from './chatService'
+import { getAdapter } from './adapters'
+import type { ProviderAdapter } from './adapters'
 import type { ChatRequestMessage, ChatStreamCallbacks, AccumulatedToolCall } from './chatService'
 import type { SubAgentState, SubAgentResult } from '../../src/types/config'
 
@@ -126,11 +126,9 @@ class SubAgentService {
 
     callbacks.onChunk(`\n🤖 [执行助手 ${agentId}] 开始执行: "${taskName}"\n`)
 
-    const url = buildChatUrl(model.baseUrl, model.providerType)
-    const headers = {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${model.apiKey}`,
-    }
+    const adapter = getAdapter(model.providerType)
+    const url = adapter.buildUrl(model.baseUrl, model.modelName)
+    const headers = adapter.buildHeaders(model.apiKey)
 
     // Build fresh messages — no conversation history pollution
     const systemContent = SUBAGENT_SYSTEM_PROMPT.replace('{timestamp}', buildTimestamp())
@@ -148,7 +146,7 @@ class SubAgentService {
 
     try {
       const result = await this.runToolLoop(
-        url, headers, model.modelName, messages,
+        adapter, url, headers, model.modelName, messages,
         controller.signal, callbacks, agentId,
       )
       finalContent = result
@@ -236,11 +234,9 @@ class SubAgentService {
 
     callbacks.onChunk(`\n🔄 [执行助手 ${agentId}] 恢复执行: "${additionalTask}"\n`)
 
-    const url = buildChatUrl(model.baseUrl, model.providerType)
-    const headers = {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${model.apiKey}`,
-    }
+    const adapter = getAdapter(model.providerType)
+    const url = adapter.buildUrl(model.baseUrl, model.modelName)
+    const headers = adapter.buildHeaders(model.apiKey)
 
     // Continue from saved messages, add new instruction
     const messages = [...savedState.messages]
@@ -254,7 +250,7 @@ class SubAgentService {
 
     try {
       const result = await this.runToolLoop(
-        url, headers, model.modelName, messages,
+        adapter, url, headers, model.modelName, messages,
         controller.signal, callbacks, agentId,
       )
       finalContent = result
@@ -306,13 +302,10 @@ class SubAgentService {
 
   /**
    * Core tool-calling loop for SubAgent execution.
-   * Similar to the main agent loop but:
-   * - Uses SubAgent-specific tools (no delegate_task/resume_agent)
-   * - Has its own iteration limit (15 rounds)
-   * - No writtenFiles dedup
-   * - Streams tool progress back via callbacks
+   * Uses the provider adapter for format-specific request/response handling.
    */
   private async runToolLoop(
+    adapter: ProviderAdapter,
     url: string,
     headers: Record<string, string>,
     modelName: string,
@@ -328,8 +321,8 @@ class SubAgentService {
       // Compress old messages to manage context window
       compressMessages(messages)
 
-      const { content, toolCalls } = await streamOneRoundWithSubAgentTools(
-        url, headers, modelName, messages, signal, tools,
+      const { content, toolCalls } = await adapter.streamRound(
+        url, headers, modelName, messages, tools, signal,
         (chunk) => {
           // Stream SubAgent's text output to the UI
           callbacks.onChunk(chunk)
@@ -390,104 +383,6 @@ class SubAgentService {
 
     return finalContent
   }
-}
-
-/**
- * StreamOneRound variant that uses SubAgent-specific tools.
- * This calls the API directly with the filtered tool set (excluding delegate_task/resume_agent).
- */
-async function streamOneRoundWithSubAgentTools(
-  url: string,
-  headers: Record<string, string>,
-  model: string,
-  messages: ChatRequestMessage[],
-  signal: AbortSignal,
-  tools: any[],
-  onContentChunk: (chunk: string) => void,
-): Promise<{ content: string; toolCalls: AccumulatedToolCall[] }> {
-  const response = await fetch(url, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({
-      model,
-      messages,
-      tools,
-      stream: true,
-      temperature: 0.7,
-      max_tokens: 8192,
-    }),
-    signal,
-  })
-
-  if (!response.ok) {
-    let errorMsg = `API 请求失败: ${response.status} ${response.statusText}`
-    try {
-      const errorBody = await response.text()
-      const parsed = JSON.parse(errorBody)
-      if (parsed.error?.message) {
-        errorMsg = `API 错误: ${parsed.error.message}`
-      }
-    } catch { /* ignore */ }
-    throw new Error(errorMsg)
-  }
-
-  if (!response.body) {
-    throw new Error('API 返回了空的响应体')
-  }
-
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-  let content = ''
-  const toolCallMap = new Map<number, AccumulatedToolCall>()
-
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-
-    buffer += decoder.decode(value, { stream: true })
-    const lines = buffer.split('\n')
-    buffer = lines.pop() || ''
-
-    for (const line of lines) {
-      const trimmed = line.trim()
-      if (!trimmed || trimmed === ':') continue
-      if (trimmed === 'data: [DONE]') continue
-
-      if (trimmed.startsWith('data: ')) {
-        try {
-          const parsed = JSON.parse(trimmed.slice(6))
-          const delta = parsed.choices?.[0]?.delta
-
-          if (delta?.content) {
-            content += delta.content
-            onContentChunk(delta.content)
-          }
-
-          if (delta?.tool_calls) {
-            for (const tc of delta.tool_calls) {
-              const idx = tc.index ?? 0
-              if (!toolCallMap.has(idx)) {
-                toolCallMap.set(idx, {
-                  id: tc.id || '',
-                  name: tc.function?.name || '',
-                  arguments: tc.function?.arguments || '',
-                })
-              } else {
-                const existing = toolCallMap.get(idx)!
-                if (tc.id) existing.id = tc.id
-                if (tc.function?.name) existing.name += tc.function.name
-                if (tc.function?.arguments) existing.arguments += tc.function.arguments
-              }
-            }
-          }
-        } catch { /* skip malformed SSE data */ }
-      }
-    }
-  }
-
-  const toolCalls = Array.from(toolCallMap.values()).filter((tc) => tc.name)
-  return { content, toolCalls }
 }
 
 // ==================== Singleton Export ====================

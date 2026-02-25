@@ -33,7 +33,7 @@ const schema = {
         id: { type: 'string' as const },
         providerType: {
           type: 'string' as const,
-          enum: ['openai-compatible', 'aliyun', 'dashscope', 'anthropic', 'google'],
+          enum: ['openai-compatible', 'aliyun', 'dashscope', 'anthropic', 'google', 'zhipu'],
         },
         name: { type: 'string' as const },
         baseUrl: { type: 'string' as const },

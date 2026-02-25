@@ -38,12 +38,17 @@ const providerOptions: { value: ProviderType; label: string; placeholder: string
   {
     value: 'anthropic',
     label: 'Anthropic',
-    placeholder: 'https://api.anthropic.com/v1',
+    placeholder: 'https://api.anthropic.com',
   },
   {
     value: 'google',
     label: 'Google AI',
-    placeholder: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    placeholder: 'https://generativelanguage.googleapis.com',
+  },
+  {
+    value: 'zhipu',
+    label: '智谱 AI',
+    placeholder: 'https://open.bigmodel.cn/api/paas/v4',
   },
 ]
 
@@ -53,6 +58,7 @@ const modelSuggestions: Record<ProviderType, string[]> = {
   dashscope: ['qwen-max', 'qwen-max-latest', 'qwen-plus', 'qwen-plus-latest', 'qwen-turbo', 'qwen-turbo-latest', 'qwen-long', 'qwen-vl-max', 'qwen-vl-plus', 'qwen2.5-72b-instruct', 'qwen2.5-coder-32b-instruct'],
   anthropic: ['claude-3-5-sonnet-20241022', 'claude-3-opus-20240229', 'claude-3-haiku-20240307'],
   google: ['gemini-2.5-flash-preview-05-20', 'gemini-2.5-pro-preview-05-06', 'gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-1.5-pro', 'gemini-1.5-flash'],
+  zhipu: ['glm-5', 'glm-4-plus', 'glm-4-flash', 'glm-4-long', 'glm-4v-plus'],
 }
 
 export function ModelProviderForm({ model, onSave, onCancel }: ModelProviderFormProps) {
@@ -88,30 +94,50 @@ export function ModelProviderForm({ model, onSave, onCancel }: ModelProviderForm
     setTestStatus('testing')
 
     try {
-      // Build test URL based on provider type
       let testBase = formData.baseUrl.replace(/\/+$/, '')
-      // Google AI: ensure /openai path for OpenAI-compatible endpoint
-      if (
-        formData.providerType === 'google' &&
-        testBase.includes('generativelanguage.googleapis.com') &&
-        !testBase.includes('/openai')
-      ) {
-        testBase = testBase + '/openai'
-      }
-      const url = testBase + '/models'
-      const response = await fetch(url, {
-        method: 'GET',
-        headers: {
-          Authorization: `Bearer ${formData.apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        signal: AbortSignal.timeout(10000),
-      })
 
-      if (response.ok || response.status === 200) {
-        setTestStatus('success')
+      if (formData.providerType === 'anthropic') {
+        // Anthropic native: send a minimal request to check auth
+        let testUrl = testBase
+        if (!testUrl.endsWith('/v1') && !testUrl.endsWith('/v1/messages')) testUrl += '/v1'
+        if (!testUrl.endsWith('/messages')) testUrl += '/messages'
+        const response = await fetch(testUrl, {
+          method: 'POST',
+          headers: {
+            'x-api-key': formData.apiKey,
+            'anthropic-version': '2023-06-01',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: formData.modelName || 'claude-3-haiku-20240307',
+            messages: [{ role: 'user', content: 'Hi' }],
+            max_tokens: 1,
+          }),
+          signal: AbortSignal.timeout(10000),
+        })
+        // 200 = auth works; 400 = auth works but bad request; 401/403 = bad key
+        setTestStatus(response.ok || response.status === 400 ? 'success' : 'error')
+      } else if (formData.providerType === 'google') {
+        // Google native: list models endpoint
+        if (!testBase.includes('/v1beta') && !testBase.includes('/v1')) testBase += '/v1beta'
+        const url = `${testBase}/models?key=${formData.apiKey}`
+        const response = await fetch(url, {
+          method: 'GET',
+          signal: AbortSignal.timeout(10000),
+        })
+        setTestStatus(response.ok ? 'success' : 'error')
       } else {
-        setTestStatus('error')
+        // OpenAI-compatible: GET /models
+        const url = testBase + '/models'
+        const response = await fetch(url, {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${formData.apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          signal: AbortSignal.timeout(10000),
+        })
+        setTestStatus(response.ok ? 'success' : 'error')
       }
     } catch {
       setTestStatus('error')
