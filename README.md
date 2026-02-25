@@ -2,6 +2,12 @@
 
 > 一个原生 Windows 桌面 AI 助手，以 Spotlight 风格的浮动输入栏为交互核心，集成多模型 AI 对话、Everything 本地文件极速搜索、联网搜索、文件读写分析与 Auto-Coder 自主编码能力。
 
+## 演示视频
+
+[![告别手动操作！EverythingAgent一键搞定所有事](https://i0.hdslb.com/bfs/archive/adb028bb6a6723bba890fdf8823a401073b0b4ab.jpg)](https://www.bilibili.com/video/BV1S5f6B3ECb)
+
+▶ 点击上方图片观看完整演示视频
+
 ## 功能特性
 
 ### Spotlight 式交互
