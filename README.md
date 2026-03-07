@@ -182,4 +182,4 @@ npm run build
 
 ## 许可证
 
-[MIT](LICENSE)
+[GPL-3.0](LICENSE)
