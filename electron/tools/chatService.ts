@@ -11,6 +11,8 @@ import { runCommand } from './commandRunner'
 import { fileManage, openApplication, openFile, desktopControl } from './fileManager'
 import { mcpService } from './mcpService'
 import { lookupCity } from './cityLookup'
+import { getAdapter } from './adapters'
+import type { ProviderAdapter } from './adapters'
 import type { ModelConfig, ChatRequestMessage } from '../../src/types/config'
 
 // Lazy import to avoid circular dependency (subAgentService imports from chatService)
@@ -602,22 +604,9 @@ export function getActiveModel(): ModelConfig | null {
   return model
 }
 
-export function buildChatUrl(baseUrl: string, providerType?: string): string {
-  let url = baseUrl.trim()
-  if (url.endsWith('/')) url = url.slice(0, -1)
-  if (url.endsWith('/chat/completions')) return url
-
-  // Google AI: use OpenAI-compatible endpoint
-  if (
-    providerType === 'google' &&
-    url.includes('generativelanguage.googleapis.com') &&
-    !url.includes('/openai')
-  ) {
-    url = url + '/openai'
-  }
-
-  if (url.endsWith('/v1')) return `${url}/chat/completions`
-  return `${url}/chat/completions`
+export function buildChatUrl(baseUrl: string, providerType?: string, modelName?: string): string {
+  const adapter = getAdapter(providerType)
+  return adapter.buildUrl(baseUrl, modelName || '')
 }
 
 function buildMcpPromptSection(): string {
@@ -643,6 +632,7 @@ ${lines.join('\n')}`
 
 /**
  * Parse a single streaming round. Returns accumulated content and tool calls.
+ * Delegates to the provider adapter for format-specific request/response handling.
  */
 export async function streamOneRound(
   url: string,
@@ -651,89 +641,10 @@ export async function streamOneRound(
   messages: ChatRequestMessage[],
   signal: AbortSignal,
   onContentChunk: (chunk: string) => void,
+  adapter?: ProviderAdapter,
 ): Promise<{ content: string; toolCalls: AccumulatedToolCall[] }> {
-  const response = await fetch(url, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({
-      model,
-      messages,
-      tools: buildTools(),
-      stream: true,
-      temperature: 0.7,
-      max_tokens: 8192,
-    }),
-    signal,
-  })
-
-  if (!response.ok) {
-    let errorMsg = `API 请求失败: ${response.status} ${response.statusText}`
-    try {
-      const errorBody = await response.text()
-      const parsed = JSON.parse(errorBody)
-      if (parsed.error?.message) {
-        errorMsg = `API 错误: ${parsed.error.message}`
-      }
-    } catch { /* ignore */ }
-    throw new Error(errorMsg)
-  }
-
-  if (!response.body) {
-    throw new Error('API 返回了空的响应体')
-  }
-
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-  let content = ''
-  const toolCallMap = new Map<number, AccumulatedToolCall>()
-
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-
-    buffer += decoder.decode(value, { stream: true })
-    const lines = buffer.split('\n')
-    buffer = lines.pop() || ''
-
-    for (const line of lines) {
-      const trimmed = line.trim()
-      if (!trimmed || trimmed === ':') continue
-      if (trimmed === 'data: [DONE]') continue
-
-      if (trimmed.startsWith('data: ')) {
-        try {
-          const parsed = JSON.parse(trimmed.slice(6))
-          const delta = parsed.choices?.[0]?.delta
-
-          // Content chunks
-          if (delta?.content) {
-            content += delta.content
-            onContentChunk(delta.content)
-          }
-
-          // Tool call chunks
-          if (delta?.tool_calls) {
-            for (const tc of delta.tool_calls) {
-              const idx = tc.index ?? 0
-              if (!toolCallMap.has(idx)) {
-                toolCallMap.set(idx, { id: '', name: '', arguments: '' })
-              }
-              const acc = toolCallMap.get(idx)!
-              if (tc.id) acc.id = tc.id
-              if (tc.function?.name) acc.name += tc.function.name
-              if (tc.function?.arguments) acc.arguments += tc.function.arguments
-            }
-          }
-        } catch { /* skip malformed JSON */ }
-      }
-    }
-  }
-
-  return {
-    content,
-    toolCalls: [...toolCallMap.values()].filter((tc) => tc.id && tc.name),
-  }
+  const a = adapter || getAdapter()
+  return a.streamRound(url, headers, model, messages, buildTools(), signal, onContentChunk)
 }
 
 /**
@@ -1142,6 +1053,7 @@ export function compressMessages(messages: ChatRequestMessage[]): void {
  * Sends a separate non-streaming request to the AI to identify key facts.
  */
 async function extractMemories(
+  adapter: ProviderAdapter,
   url: string,
   headers: Record<string, string>,
   modelName: string,
@@ -1189,25 +1101,15 @@ ${dialogParts.join('\n')}
 请严格以 JSON 数组格式输出，不要包含其他文字：
 [{"content": "...", "category": "...", "update_id": "可选"}]`
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        model: modelName,
-        messages: [
-          { role: 'system', content: '你是一个专注于提取关键信息的助手。你只输出合法的 JSON 数组，不输出任何其他内容。' },
-          { role: 'user', content: extractionPrompt },
-        ],
-        stream: false,
-        temperature: 0.3,
-        max_tokens: 2048,
-      }),
+    const memMessages: ChatRequestMessage[] = [
+      { role: 'system', content: '你是一个专注于提取关键信息的助手。你只输出合法的 JSON 数组，不输出任何其他内容。' },
+      { role: 'user', content: extractionPrompt },
+    ]
+
+    const text = await adapter.nonStreamingRequest(url, headers, modelName, memMessages, {
+      temperature: 0.3,
+      maxTokens: 2048,
     })
-
-    if (!response.ok) return
-
-    const data = await response.json()
-    const text = data.choices?.[0]?.message?.content?.trim()
     if (!text) return
 
     // Parse JSON from the response (handle markdown code blocks)
@@ -1253,11 +1155,9 @@ export async function sendChatStream(
   const controller = new AbortController()
   activeRequests.set(requestId, controller)
 
-  const url = buildChatUrl(model.baseUrl, model.providerType)
-  const headers = {
-    'Content-Type': 'application/json',
-    'Authorization': `Bearer ${model.apiKey}`,
-  }
+  const adapter = getAdapter(model.providerType)
+  const url = adapter.buildUrl(model.baseUrl, model.modelName)
+  const headers = adapter.buildHeaders(model.apiKey)
 
   // Build messages with system prompt + current timestamp
   const now = new Date()
@@ -1307,6 +1207,7 @@ export async function sendChatStream(
           fullContent += chunk
           callbacks.onChunk(chunk)
         },
+        adapter,
       )
 
       // No tool calls - we're done
@@ -1434,7 +1335,7 @@ export async function sendChatStream(
     callbacks.onEnd(fullContent)
 
     // Async memory extraction (non-blocking, fire-and-forget)
-    extractMemories(url, headers, model.modelName, userMessages).catch(() => {})
+    extractMemories(adapter, url, headers, model.modelName, userMessages).catch(() => {})
   } catch (err: any) {
     if (err.name === 'AbortError') {
       callbacks.onEnd(fullContent)

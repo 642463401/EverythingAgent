@@ -13,6 +13,7 @@ const providerLabels: Record<ProviderType, string> = {
   dashscope: '通义千问',
   anthropic: 'Anthropic',
   google: 'Google AI',
+  zhipu: '智谱 AI',
 }
 
 const providerColors: Record<ProviderType, string> = {
@@ -21,6 +22,7 @@ const providerColors: Record<ProviderType, string> = {
   dashscope: 'bg-purple-500/20 text-purple-400',
   anthropic: 'bg-amber-500/20 text-amber-400',
   google: 'bg-blue-500/20 text-blue-400',
+  zhipu: 'bg-cyan-500/20 text-cyan-400',
 }
 
 export function ModelProviderList() {

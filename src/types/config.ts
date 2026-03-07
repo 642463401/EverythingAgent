@@ -1,5 +1,5 @@
 /** Model provider type */
-export type ProviderType = 'openai-compatible' | 'aliyun' | 'dashscope' | 'anthropic' | 'google'
+export type ProviderType = 'openai-compatible' | 'aliyun' | 'dashscope' | 'anthropic' | 'google' | 'zhipu'
 
 /** Model configuration interface */
 export interface ModelConfig {
