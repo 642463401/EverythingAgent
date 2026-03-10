@@ -1,12 +1,13 @@
 import React, { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { X, Bot, Sliders, ArrowLeft, GripHorizontal, Brain } from 'lucide-react'
+import { X, Bot, Sliders, ArrowLeft, GripHorizontal, Brain, Wrench } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { ModelProviderList } from './ModelProviderList'
 import { GeneralSettings } from './GeneralSettings'
 import { MemorySettings } from './MemorySettings'
+import { SkillsPanel } from './SkillsPanel'
 
-type SettingsTab = 'models' | 'general' | 'memory'
+type SettingsTab = 'models' | 'general' | 'memory' | 'skills'
 
 interface SettingsPanelProps {
   open: boolean
@@ -22,6 +23,7 @@ const tabs: { id: SettingsTab; label: string; icon: React.ReactNode }[] = [
   { id: 'models', label: '模型配置', icon: <Bot className="w-4 h-4" /> },
   { id: 'general', label: '通用设置', icon: <Sliders className="w-4 h-4" /> },
   { id: 'memory', label: 'AI 记忆', icon: <Brain className="w-4 h-4" /> },
+  { id: 'skills', label: '技能配置', icon: <Wrench className="w-4 h-4" /> },
 ]
 
 export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
@@ -140,6 +142,17 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
               transition={{ duration: 0.15 }}
             >
               <MemorySettings />
+            </motion.div>
+          )}
+          {activeTab === 'skills' && (
+            <motion.div
+              key="skills"
+              initial={{ opacity: 0, x: -10 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 10 }}
+              transition={{ duration: 0.15 }}
+            >
+              <SkillsPanel />
             </motion.div>
           )}
         </AnimatePresence>

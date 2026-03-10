@@ -73,18 +73,6 @@ export interface ChatRequestMessage {
   tool_call_id?: string
 }
 
-/** SubAgent state for cross-session persistence */
-export interface SubAgentState {
-  id: string
-  name: string
-  messages: ChatRequestMessage[]
-  status: 'running' | 'completed' | 'failed'
-  result: string | null
-  filesAffected: string[]
-  createdAt: number
-  updatedAt: number
-}
-
 /** SubAgent execution result returned to main agent */
 export interface SubAgentResult {
   agentId: string
@@ -160,4 +148,12 @@ export const IPC_CHANNELS = {
   EVERYTHING_AVAILABLE: 'everything:available',
   EVERYTHING_OPEN: 'everything:open',
   EVERYTHING_REVEAL: 'everything:reveal',
+
+  // Skills
+  SKILLS_LIST: 'skills:list',
+  SKILLS_SAVE: 'skills:save',
+  SKILLS_DELETE: 'skills:delete',
+
+  // Dialog
+  SHOW_OPEN_DIALOG: 'dialog:show-open',
 } as const

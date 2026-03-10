@@ -1,5 +1,6 @@
 import Store from 'electron-store'
-import type { AppConfig, ModelConfig, AppSettings, Conversation, Memory, SubAgentState } from '../src/types/config'
+import type { AppConfig, ModelConfig, AppSettings, Conversation, Memory } from '../src/types/config'
+import type { Skill } from '../src/types/skill'
 import { app } from 'electron'
 import path from 'node:path'
 
@@ -268,54 +269,48 @@ class MemoryManager {
 
 export const memoryManager = new MemoryManager()
 
-// ==================== SubAgent Storage ====================
+// ==================== Skills Storage ====================
 
-const MAX_SUBAGENTS = 20
-const SUBAGENT_MAX_AGE_DAYS = 7
-
-class SubAgentManager {
-  private store: Store<{ subAgents: SubAgentState[] }>
+class SkillManager {
+  private store: Store<{ skills: Skill[] }>
 
   constructor() {
-    this.store = new Store<{ subAgents: SubAgentState[] }>({
-      name: 'everything-agent-subagents',
-      defaults: { subAgents: [] },
+    this.store = new Store<{ skills: Skill[] }>({
+      name: 'everything-agent-skills',
+      defaults: { skills: [] },
     })
   }
 
-  getAgents(): SubAgentState[] {
-    return this.store.get('subAgents', [])
+  getSkills(): Skill[] {
+    return this.store.get('skills', [])
       .sort((a, b) => b.updatedAt - a.updatedAt)
   }
 
-  getAgent(id: string): SubAgentState | undefined {
-    return this.store.get('subAgents', []).find((a) => a.id === id)
+  getEnabledSkills(): Skill[] {
+    return this.getSkills().filter((s) => s.enabled)
   }
 
-  saveAgent(agent: SubAgentState): void {
-    const agents = this.store.get('subAgents', [])
-    const index = agents.findIndex((a) => a.id === agent.id)
+  getSkill(id: string): Skill | undefined {
+    return this.store.get('skills', []).find((s) => s.id === id)
+  }
+
+  saveSkill(skill: Skill): void {
+    const skills = this.store.get('skills', [])
+    const index = skills.findIndex((s) => s.id === skill.id)
     if (index !== -1) {
-      agents[index] = agent
+      skills[index] = skill
     } else {
-      agents.unshift(agent)
+      skills.push(skill)
     }
-    // Keep only the most recent sub-agents
-    this.store.set('subAgents', agents.slice(0, MAX_SUBAGENTS))
+    this.store.set('skills', skills)
   }
 
-  deleteAgent(id: string): void {
-    const agents = this.store.get('subAgents', []).filter((a) => a.id !== id)
-    this.store.set('subAgents', agents)
-  }
-
-  cleanupOldAgents(): void {
-    const cutoff = Date.now() - SUBAGENT_MAX_AGE_DAYS * 24 * 60 * 60 * 1000
-    const agents = this.store.get('subAgents', []).filter((a) => a.updatedAt > cutoff)
-    this.store.set('subAgents', agents)
+  deleteSkill(id: string): void {
+    const skills = this.store.get('skills', []).filter((s) => s.id !== id)
+    this.store.set('skills', skills)
   }
 }
 
-export const subAgentManager = new SubAgentManager()
+export const skillManager = new SkillManager()
 
 export default configManager

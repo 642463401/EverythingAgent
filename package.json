@@ -1,13 +1,13 @@
 {
   "name": "everything-agent",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "EverythingAgent - Native Desktop AI Assistant",
   "main": "dist-electron/main.js",
   "author": "EverythingAgent",
   "license": "GPL-3.0-or-later",
   "scripts": {
     "dev": "vite",
-    "build": "npm run build:icon && tsc --noEmit && vite build && electron-builder",
+    "build": "npm run build:icon && tsc --noEmit && vite build && cross-env ELECTRON_BUILDER_CACHE=E:/electron-builder-cache TEMP=E:/tmp TMP=E:/tmp electron-builder",
     "build:vite": "tsc --noEmit && vite build",
     "build:icon": "node scripts/convert-icon.js",
     "preview": "vite preview",
@@ -45,6 +45,7 @@
     "@types/uuid": "^10.0.0",
     "@vitejs/plugin-react": "^4.3.0",
     "autoprefixer": "^10.4.20",
+    "cross-env": "^10.1.0",
     "electron": "^34.1.0",
     "electron-builder": "^25.1.8",
     "png-to-ico": "^3.0.1",

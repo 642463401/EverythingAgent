@@ -7,9 +7,10 @@ import {
   Menu,
   nativeImage,
   screen,
+  dialog,
 } from 'electron'
 import path from 'node:path'
-import { configManager, conversationManager, memoryManager } from './configManager'
+import { configManager, conversationManager, memoryManager, skillManager } from './configManager'
 import { IPC_CHANNELS } from '../src/types/config'
 import { searchEverything, isEverythingAvailable, openSearchResult, revealInExplorer, ensureEverythingRunning, stopEverything } from './tools/everythingSearch'
 import { sendChatStream, abortChatRequest } from './tools/chatService'
@@ -260,6 +261,24 @@ function setupIPC() {
   })
   ipcMain.handle(IPC_CHANNELS.MEMORY_CLEAR, () => {
     memoryManager.clearMemories()
+  })
+
+  // ==================== Skills ====================
+  ipcMain.handle(IPC_CHANNELS.SKILLS_LIST, () => skillManager.getSkills())
+  ipcMain.handle(IPC_CHANNELS.SKILLS_SAVE, (_event, skill) => {
+    skillManager.saveSkill(skill)
+    return skillManager.getSkills()
+  })
+  ipcMain.handle(IPC_CHANNELS.SKILLS_DELETE, (_event, id: string) => {
+    skillManager.deleteSkill(id)
+    return skillManager.getSkills()
+  })
+
+  // ==================== Dialog ====================
+  ipcMain.handle(IPC_CHANNELS.SHOW_OPEN_DIALOG, async (_event, options: any) => {
+    const win = BrowserWindow.getFocusedWindow()
+    if (!win) return { canceled: true, filePaths: [] }
+    return dialog.showOpenDialog(win, options)
   })
 
   // ==================== Everything Search ====================

@@ -3,7 +3,7 @@
  * The AI can autonomously invoke Everything search via OpenAI-compatible function calling.
  */
 
-import { configManager, memoryManager } from '../configManager'
+import { configManager, memoryManager, skillManager } from '../configManager'
 import { searchEverything } from './everythingSearch'
 import { webSearch, webReader, isWebSearchAvailable } from './webSearch'
 import { readFile, writeFile, editFile, listDirectory, analyzeData } from './fileTools'
@@ -11,6 +11,7 @@ import { runCommand } from './commandRunner'
 import { fileManage, openApplication, openFile, desktopControl } from './fileManager'
 import { mcpService } from './mcpService'
 import { lookupCity } from './cityLookup'
+import { executeSkill } from './skillService'
 import { getAdapter } from './adapters'
 import type { ProviderAdapter } from './adapters'
 import type { ModelConfig, ChatRequestMessage } from '../../src/types/config'
@@ -39,139 +40,66 @@ export interface AccumulatedToolCall {
   arguments: string
 }
 
-interface SubTask {
-  id: number
-  title: string
-  status: 'pending' | 'in_progress' | 'completed' | 'skipped'
-  result?: string
-}
-
-interface TaskPlan {
-  goal: string
-  subtasks: SubTask[]
-  currentSubtaskId: number | null
-}
-
 const activeRequests = new Map<string, AbortController>()
 
-const SYSTEM_PROMPT = `你是 EverythingAgent，一个强大的 Windows 桌面 AI 助手，同时也是一个自主编码代理（Auto-Coder）。
+const SYSTEM_PROMPT = `你是 EverythingAgent，一个强大的 Windows 桌面 AI 助手。
 
-你拥有以下能力：
-1. 回答用户的各种问题
-2. 使用 everything_search 工具在用户电脑上快速搜索本地文件和文件夹
-3. 使用 web_search 工具联网搜索实时信息（新闻、技术文档、百科知识等）
-4. 使用 web_reader 工具读取和提取网页内容（获取文章全文、页面详情等）
-5. 使用 read_file 工具读取本地文件内容（代码、文本、配置文件、PDF 等）
-6. 使用 write_file 工具创建或写入文件（生成报告、保存内容、创建代码文件、Markdown 文档等）
-7. 使用 edit_file 工具局部修改已有文件内容（查找并替换指定文本，无需重写整个文件）
-8. 使用 list_directory 工具列出目录下的文件和文件夹
-9. 使用 analyze_data 工具分析数据文件（CSV、JSON），获取统计信息和数据预览
-10. 使用 run_command 工具在用户电脑上执行系统命令（运行代码、安装依赖、执行构建、git 操作等）
-11. 帮助用户理解和管理他们的文件
-12. 使用 file_manage 工具管理文件（复制、移动、重命名、删除文件或文件夹）
-13. 使用 open_application 工具打开应用程序（通过名称打开任何已安装的应用）
-14. 使用 open_file 工具用默认或指定程序打开文件
-15. 使用 desktop_control 工具控制桌面显示（隐藏/显示桌面图标）
-16. 使用 task_progress 工具管理复杂任务的进度（分解子任务、跟踪完成状态）
+你的角色是「任务调度中心」：你负责理解用户意图、规划任务、将任务委派给执行助手（SubAgent），然后根据执行结果回复用户。
 
-文档生成策略（重要）：
-- 所有文档内容默认先生成 Markdown（.md）格式，使用 write_file 直接写入。这是最快的方式。
-- 不要使用结构化 JSON 来组织文档内容，直接在 write_file 的 content 参数中写入 Markdown 文本。
-- 当用户明确要求 Word(.docx)、Excel(.xlsx)、PPT(.pptx)、PDF(.pdf) 等 Office 格式时，先生成 .md 文件，然后告知用户可以使用 MCP 工具转换为目标格式，或调用可用的 MCP 文档转换工具。
-- 文件写入成功后，如果用户要求重新生成或修改，直接执行操作，不要因为之前写入过而跳过。
-- 文件修改：当用户要求修改已有文件的部分内容时，优先使用 edit_file 工具进行局部替换。如果 edit_file 返回错误（如未找到匹配文本），应先用 read_file 重新读取文件最新内容，然后重试 edit_file 或改用 write_file 写入完整的修改后内容。
-- 重要：当工具返回结果中包含 "success": false 或 "warning": true 时，说明操作未成功执行，不要向用户报告操作成功。必须检查工具返回的 success 字段来确认操作是否真正完成。
-- 当用户要求重新生成或删除后重新创建文件时，直接使用 write_file 写入即可，系统会自动处理。
+核心架构（必须严格遵守）：
+- 你自己不直接执行任何操作（不读文件、不写文件、不搜索、不运行命令）。
+- 所有需要执行的操作，必须通过 delegate_task 工具委派给执行助手。
+- 每个执行助手在全新的隔离上下文中运行，不受对话历史影响，确保每次都会真正执行操作。
+- 执行助手完成任务后会返回结构化结果，你根据结果回复用户。
 
-工具使用策略：
-- 当用户要求查找文件时，使用 everything_search（全盘快速搜索）或 list_directory（浏览特定目录）。
-- 当用户需要查询实时信息时，使用 web_search 联网搜索。
-- 当用户提供 URL 并要求查看内容时，使用 web_reader 读取网页。
-- 当用户要求读取/查看某个文件内容时，使用 read_file。支持 PDF 文件自动提取文本。对于图片、音视频等二进制文件，read_file 无法读取，请告知用户。
-- 当用户要求创建文件或生成文档时，使用 write_file 直接写入 Markdown 或纯文本内容。
-- 当用户要求修改文件中的部分内容时，使用 edit_file 进行精确替换。
-- 当用户要求分析数据（CSV/JSON）时，使用 analyze_data 获取统计摘要和预览，然后给出分析结论。
-- 当用户要求运行代码、安装依赖、执行构建、git操作或任何命令行任务时，使用 run_command。
-- 当用户要求复制、移动、重命名、删除文件或创建文件夹时，使用 file_manage。
-- 当用户要求打开某个应用程序时，使用 open_application（支持中英文应用名，如"打开微信"、"打开Chrome"）。
-- 当用户要求打开某个文件时，使用 open_file（用默认程序或指定程序打开）。
-- 当用户要求隐藏/显示桌面图标时，使用 desktop_control。
-- 可以组合使用工具：先搜索文件 → 读取内容 → 分析数据 → 写入报告。
-- 搜索结果请以简洁清晰的格式展示，并标注来源。
-- 写文件前请确认路径和内容，写入后告知用户完整路径。
-- 文件路径必须使用绝对路径（如 C:\\Users\\user\\Desktop\\report.md），不要使用相对路径。
+delegate_task 使用方法：
+- task（必填）：清晰具体的任务描述，包含所有必要信息（完整文件路径、具体内容、操作步骤等）。执行助手没有对话历史，所以任务描述必须自包含。
+- context（可选）：提供给执行助手的上下文信息，如之前任务的结果、相关文件内容摘要等。
 
-Auto-Coder 自主编码工作流：
-当用户提出编码任务时，按照以下流程自主工作：
-1. 使用 list_directory 浏览项目结构，了解代码组织。
-2. 使用 read_file 读取相关代码文件，理解现有逻辑。
-3. 使用 write_file 创建或修改代码文件。
-4. 使用 run_command 运行代码、执行测试或构建，检查结果。
-5. 如果出错，读取错误信息，修改代码，再次运行，循环直到成功。
-run_command 适用场景：运行 Python/Node.js/Java 等代码、pip install / npm install 安装依赖、git 操作、编译构建、运行测试、查看环境信息（python --version 等）。
+任务规划策略：
+1. 简单任务（单步操作）：直接一次 delegate_task 即可。
+   例如：搜索文件、读取一个文件、打开应用、创建单个文件。
+2. 复杂任务（多步操作）：将任务拆解为多个独立的子任务，依次委派给执行助手。
+   例如："分析项目并生成报告" → 子任务1：浏览项目结构 → 子任务2：读取关键文件 → 子任务3：生成报告。
+3. 有依赖的任务：前一个子任务的结果可以作为 context 传给下一个子任务。
+4. 独立任务：可以同时委派多个不相关的子任务。
 
-任务规划与进度管理：
-当用户请求涉及多个步骤的复杂任务时（如"分析整个项目"、"读取所有代码文件"、"生成完整报告"），你必须：
-1. 先使用 task_progress 工具的 create_plan 操作，将任务分解为 3-10 个可独立执行的子任务。
-2. 每开始一个子任务时，调用 update_status 将其标记为 in_progress。
-3. 每完成一个子任务时，调用 update_status 将其标记为 completed，并附上简要结果描述（<100字）。
-4. 如果某个子任务不再需要，标记为 skipped。
+任务描述编写要求（极其重要）：
+- 文件路径必须使用绝对路径（如 C:\\Users\\user\\Desktop\\file.txt）。
+- 创建文件时，必须在 task 描述中写明完整的文件内容，不得省略或用占位符。
+- 修改文件时，必须说明要修改哪个文件、修改什么内容。
+- 执行助手没有对话上下文，所以不要用"之前的文件"、"上面提到的"等模糊引用。
 
-上下文管理注意事项：
-- 你的上下文窗口有限，之前轮次的工具结果可能已被压缩或截断。
-- 读取大文件时，关注关键信息并在 task_progress 的 result 中记录要点，而不是依赖原始内容在后续步骤中仍然可用。
-- 每个子任务应尽量自包含：完成后记录要点摘要，后续步骤可以依赖摘要而非原始数据。
-- 如果任务超出你的处理能力，诚实告知用户并建议拆分为多次对话。
+执行助手可用的工具：
+- everything_search：本地文件搜索（Everything引擎）
+- web_search / web_reader：联网搜索和网页读取
+- read_file：读取文件内容（支持文本、代码、PDF等）
+- write_file：创建/写入文件
+- edit_file：局部修改文件内容
+- list_directory：列出目录内容
+- analyze_data：分析数据文件（CSV/JSON）
+- run_command：执行系统命令（运行代码、安装依赖、git等）
+- file_manage：文件管理（复制/移动/重命名/删除）
+- open_application：打开应用程序
+- open_file：打开文件
+- desktop_control：桌面控制
 
-工具调用严格要求（极其重要，必须遵守）：
-- 你必须通过实际调用工具来执行操作。禁止在没有调用工具的情况下声称已完成文件创建、修改或删除操作。
-- 每次用户要求创建文件时，必须调用 write_file 工具并传入完整的文件内容。即使你之前在对话中创建过该文件，也必须重新调用 write_file 并写入完整内容。
-- 每次用户要求修改文件时，必须调用 edit_file 或 write_file 工具。不要假设之前的修改仍然有效。
-- 对话历史中的工具调用结果仅供参考，不代表文件当前状态。文件可能已被用户手动删除、移动或修改。
-- 如果 edit_file 失败（如未找到匹配文本），必须先调用 read_file 读取文件当前内容，然后根据实际内容重新调用 edit_file 或改用 write_file 重写完整内容。
+回复策略：
+- 纯知识问答（不需要操作）：直接回答，无需委派。
+- 需要操作的任务：先委派执行，拿到结果后再回复用户。
+- 多步任务：简要告知用户任务计划，然后依次委派，最后汇总结果。
+- 执行助手返回失败时：分析原因，可以调整任务描述后重新委派。
 
-你可以根据用户的需求自动切换为以下专家模式，在回复开头用 [模式名] 标注当前模式：
+你可以根据用户的需求自动切换语调风格：
+- 生活相关：友好亲切
+- 工作相关：专业严谨
+- 编程相关：技术精确
+- 文件操作：高效直接
 
-【生活助手】当用户询问衣食住行、生活建议、推荐、天气、美食、旅行等日常问题时：
-- 提供实用、具体的建议
-- 结合 web_search 查找最新信息和推荐
-- 用友好亲切的语调回复
-
-【工作助手】当用户需要文档编写、数据分析、报告生成、会议总结等工作任务时：
-- 使用 write_file 生成 Markdown 格式的专业文档，用户需要 Office 格式时再通过 MCP 工具转换
-- 使用 edit_file 修改已有文档的部分内容
-- 使用 analyze_data 分析数据并给出结论
-- 用专业严谨的语调回复
-
-【编程助手】当用户需要代码编写、调试、技术问题解答、项目开发时：
-- 遵循 Auto-Coder 工作流（浏览→读取→编写→运行→修复）
-- 代码简洁规范，附带必要注释
-- 用技术精确的语调回复
-
-【文件管家】当用户需要文件管理、应用操作、桌面控制等系统操作时：
-- 使用 file_manage、open_application、open_file、desktop_control 等工具
-- 操作前简要确认意图，操作后报告结果
-- 用高效直接的语调回复
-
-当任务跨越多个领域时（如"分析这个CSV然后生成PPT报告"），灵活组合多个模式的能力来完成。
-
-任务委派规则（重要）：
-你拥有 delegate_task 工具，可以将任务委派给独立的执行助手。执行助手在全新的上下文中运行，不受当前对话历史影响，确保每个操作都被真正执行。
-
-何时使用 delegate_task：
-- 涉及 2 个以上步骤的文件操作（如：读取→修改→验证、批量创建文件、项目搭建）
-- 用户要求"重新执行"、"再做一次"、"重新生成"之前做过的操作
-- 复杂的编码工作流（浏览→读取→编写→运行→修复）
-- 批量文件管理（复制/移动/重命名多个文件）
-
-何时直接执行（不委派）：
-- 简单的单步操作：读取一个文件、搜索文件、列出目录、打开应用
-- 简单的问答和信息查询
-- 单个文件的创建或修改（当你确信可以一次完成时）
-
-恢复执行助手：
-- 当用户要求在之前的操作基础上继续修改（如"把刚才创建的文件再加个功能"），使用 resume_agent 恢复之前的执行助手
-- 执行助手的 ID 会在 delegate_task 的返回结果中提供`
+极其重要的规则：
+- 收到执行助手结果后，必须对照用户原始请求检查是否全部完成。
+- 多步任务必须逐一委派直到全部完成，不要因已完成部分任务就停止。
+- 子任务失败时应分析原因并重试或调整方案。`
 
 export function buildTools() {
   const tools: any[] = [
@@ -471,48 +399,6 @@ export function buildTools() {
     },
   })
 
-  // ==================== Task Progress (context management) ====================
-  tools.push({
-    type: 'function' as const,
-    function: {
-      name: 'task_progress',
-      description: '任务进度管理工具。用于分解复杂任务、跟踪子任务进度。操作类型：create_plan(创建任务计划)、update_status(更新子任务状态)、get_progress(获取当前进度)。',
-      parameters: {
-        type: 'object',
-        properties: {
-          action: {
-            type: 'string',
-            enum: ['create_plan', 'update_status', 'get_progress'],
-            description: '操作类型',
-          },
-          goal: {
-            type: 'string',
-            description: '(create_plan) 总体任务目标',
-          },
-          subtasks: {
-            type: 'array',
-            items: { type: 'string' },
-            description: '(create_plan) 子任务标题列表',
-          },
-          subtask_id: {
-            type: 'number',
-            description: '(update_status) 子任务序号（从1开始）',
-          },
-          status: {
-            type: 'string',
-            enum: ['in_progress', 'completed', 'skipped'],
-            description: '(update_status) 新状态',
-          },
-          result: {
-            type: 'string',
-            description: '(update_status) 子任务完成后的简要结果描述（建议<100字）',
-          },
-        },
-        required: ['action'],
-      },
-    },
-  })
-
   // ==================== City Lookup (for weather MCP) ====================
   tools.push({
     type: 'function' as const,
@@ -532,51 +418,6 @@ export function buildTools() {
           },
         },
         required: ['query'],
-      },
-    },
-  })
-
-  // ==================== SubAgent Delegation Tools ====================
-  tools.push({
-    type: 'function' as const,
-    function: {
-      name: 'delegate_task',
-      description: '将多步骤任务委派给独立的执行助手。执行助手在隔离环境中运行，不受当前对话历史影响，确保每个操作都被真正执行。适用于：多文件创建/修改、批量操作、需要"重新执行"的任务、复杂编码工作流。',
-      parameters: {
-        type: 'object',
-        properties: {
-          task: {
-            type: 'string',
-            description: '要执行的任务描述，必须清晰具体，包含所有必要信息（文件路径、内容要求等）',
-          },
-          context: {
-            type: 'string',
-            description: '可选。提供给执行助手的上下文信息，如之前步骤的结果、相关文件内容等',
-          },
-        },
-        required: ['task'],
-      },
-    },
-  })
-
-  tools.push({
-    type: 'function' as const,
-    function: {
-      name: 'resume_agent',
-      description: '恢复之前的执行助手继续工作。当需要在之前的操作基础上继续修改时使用。执行助手的 ID 来自上次 delegate_task 的返回结果。',
-      parameters: {
-        type: 'object',
-        properties: {
-          agent_id: {
-            type: 'string',
-            description: '要恢复的执行助手 ID',
-          },
-          additional_task: {
-            type: 'string',
-            description: '新的任务指令',
-          },
-        },
-        required: ['agent_id', 'additional_task'],
       },
     },
   })
@@ -630,6 +471,49 @@ function buildMemoryPromptSection(): string {
 ${lines.join('\n')}`
 }
 
+function buildSkillsPromptSection(): string {
+  const skills = skillManager.getEnabledSkills()
+  if (skills.length === 0) return ''
+  const lines = skills.map((s: any) => {
+    const tools = (s.tools || [])
+    const toolsStr = tools.map((t: any) => typeof t === 'string' ? t : t.type).join(', ')
+    return `- skill_${s.id}: ${s.name}${toolsStr ? ` [工具: ${toolsStr}]` : ''} — ${s.usageRule || s.description || ''}`
+  })
+  return `\n\n可用技能（执行助手可通过 skill_<id> 工具调用这些技能）：
+${lines.join('\n')}`
+}
+
+/**
+ * Build the tools available to AGENT (only delegate_task).
+ * AGENT does not execute tasks directly — it delegates everything to SubAgents.
+ */
+function buildAgentTools(): any[] {
+  const tools: any[] = [
+    {
+      type: 'function' as const,
+      function: {
+        name: 'delegate_task',
+        description: '将任务委派给独立的执行助手。执行助手在全新的隔离上下文中运行，不受当前对话历史影响，确保每个操作都被真正执行。执行完成后返回结构化结果。',
+        parameters: {
+          type: 'object',
+          properties: {
+            task: {
+              type: 'string',
+              description: '要执行的任务描述，必须清晰具体且自包含，包含所有必要信息（完整文件路径、具体内容、操作步骤等）。执行助手没有对话历史，不要使用模糊引用。',
+            },
+            context: {
+              type: 'string',
+              description: '可选。提供给执行助手的上下文信息，如之前子任务的执行结果摘要、相关文件内容等。',
+            },
+          },
+          required: ['task'],
+        },
+      },
+    },
+  ]
+  return tools
+}
+
 /**
  * Parse a single streaming round. Returns accumulated content and tool calls.
  * Delegates to the provider adapter for format-specific request/response handling.
@@ -642,76 +526,10 @@ export async function streamOneRound(
   signal: AbortSignal,
   onContentChunk: (chunk: string) => void,
   adapter?: ProviderAdapter,
+  tools?: any[],
 ): Promise<{ content: string; toolCalls: AccumulatedToolCall[] }> {
   const a = adapter || getAdapter()
-  return a.streamRound(url, headers, model, messages, buildTools(), signal, onContentChunk)
-}
-
-/**
- * Execute task_progress tool. Manages an in-memory task plan scoped to the current request.
- */
-function executeTaskProgress(planRef: { current: TaskPlan | null }, argsJson: string): string {
-  try {
-    const args = JSON.parse(argsJson)
-
-    if (args.action === 'create_plan') {
-      if (!args.goal || !args.subtasks || args.subtasks.length === 0) {
-        return JSON.stringify({ error: '需要提供 goal 和 subtasks' })
-      }
-      planRef.current = {
-        goal: args.goal,
-        subtasks: args.subtasks.map((title: string, i: number) => ({
-          id: i + 1,
-          title,
-          status: 'pending' as const,
-        })),
-        currentSubtaskId: null,
-      }
-      return JSON.stringify({
-        success: true,
-        message: `已创建任务计划: ${args.goal}`,
-        totalSubtasks: args.subtasks.length,
-        subtasks: planRef.current.subtasks,
-      })
-    }
-
-    if (args.action === 'update_status') {
-      if (!planRef.current) {
-        return JSON.stringify({ error: '尚未创建任务计划，请先使用 create_plan' })
-      }
-      const subtask = planRef.current.subtasks.find((t) => t.id === args.subtask_id)
-      if (!subtask) {
-        return JSON.stringify({ error: `未找到子任务 #${args.subtask_id}` })
-      }
-      subtask.status = args.status
-      if (args.result) subtask.result = args.result
-      if (args.status === 'in_progress') planRef.current.currentSubtaskId = subtask.id
-
-      const completed = planRef.current.subtasks.filter((t) => t.status === 'completed').length
-      const total = planRef.current.subtasks.length
-      return JSON.stringify({
-        success: true,
-        progress: `${completed}/${total}`,
-        subtask: { id: subtask.id, title: subtask.title, status: subtask.status },
-      })
-    }
-
-    if (args.action === 'get_progress') {
-      if (!planRef.current) {
-        return JSON.stringify({ message: '无活跃任务计划' })
-      }
-      const completed = planRef.current.subtasks.filter((t) => t.status === 'completed').length
-      return JSON.stringify({
-        goal: planRef.current.goal,
-        progress: `${completed}/${planRef.current.subtasks.length}`,
-        subtasks: planRef.current.subtasks,
-      })
-    }
-
-    return JSON.stringify({ error: `未知操作: ${args.action}` })
-  } catch (err: any) {
-    return JSON.stringify({ error: err.message })
-  }
+  return a.streamRound(url, headers, model, messages, tools || buildTools(), signal, onContentChunk)
 }
 
 /**
@@ -918,6 +736,20 @@ export async function executeTool(name: string, argsJson: string): Promise<strin
     }
   }
 
+  // ==================== Skill Tools (skill_<id> routing) ====================
+  if (name.startsWith('skill_')) {
+    try {
+      const skillId = name.slice(6) // Remove 'skill_' prefix
+      const args = JSON.parse(argsJson)
+      console.log('[Tool] Skill:', skillId, argsJson.slice(0, 200))
+      const result = await executeSkill(skillId, args.input || '')
+      return JSON.stringify(result)
+    } catch (err: any) {
+      console.error('[Tool] Skill error:', err)
+      return JSON.stringify({ error: `技能调用失败: ${err.message}` })
+    }
+  }
+
   return JSON.stringify({ error: `Unknown tool: ${name}` })
 }
 
@@ -1018,6 +850,10 @@ export function compressMessages(messages: ChatRequestMessage[]): void {
 
   // Compress all tool messages before the most recent round
   for (let i = 0; i < lastToolRoundStart; i++) {
+    // Skip progress check messages (they will be replaced each round)
+    if (messages[i].role === 'user' && typeof messages[i].content === 'string' && messages[i].content!.startsWith('[进度检查]')) {
+      continue
+    }
     if (messages[i].role === 'tool' && messages[i].content) {
       messages[i].content = compressToolResult(messages[i].content!)
     }
@@ -1171,7 +1007,7 @@ export async function sendChatStream(
     weekday: 'long',
     hour12: false,
   })
-  const systemContent = `${SYSTEM_PROMPT}${buildMcpPromptSection()}${buildMemoryPromptSection()}\n\n当前时间: ${timestamp}`
+  const systemContent = `${SYSTEM_PROMPT}${buildMcpPromptSection()}${buildSkillsPromptSection()}${buildMemoryPromptSection()}\n\n当前时间: ${timestamp}`
   const messages: ChatRequestMessage[] = [
     { role: 'system', content: systemContent },
     ...userMessages,
@@ -1189,10 +1025,10 @@ export async function sendChatStream(
       }
     }
 
-    // Task progress state scoped to this request
-    const taskPlanRef: { current: TaskPlan | null } = { current: null }
+    // AGENT only has delegate_task tool — all execution goes through SubAgents
+    const agentTools = buildAgentTools()
 
-    // Tool calling loop (max 30 iterations — supports long multi-step tasks with context compression)
+    // Tool calling loop (max 30 iterations — supports delegating multiple subtasks)
     for (let i = 0; i < 30; i++) {
       // Compress old tool results before each round to free context space
       compressMessages(messages)
@@ -1208,6 +1044,7 @@ export async function sendChatStream(
           callbacks.onChunk(chunk)
         },
         adapter,
+        agentTools,
       )
 
       // No tool calls - we're done
@@ -1225,84 +1062,47 @@ export async function sendChatStream(
         })),
       })
 
-      // Execute each tool and add results
+      // Execute each tool call — AGENT only uses delegate_task
       for (const tc of toolCalls) {
         let queryDisplay = ''
         try {
           const args = JSON.parse(tc.arguments)
-          queryDisplay = args.query || args.command || args.path || args.url || args.name || args.operation || args.action || args.q || tc.arguments
+          queryDisplay = args.task ? (args.task.length > 60 ? args.task.slice(0, 60) + '...' : args.task) : tc.arguments
         } catch {
           queryDisplay = tc.arguments
         }
 
         // Send status to UI
-        const toolMeta: Record<string, { icon: string; label: string }> = {
-          'everything_search': { icon: '🔍', label: '本地搜索' },
-          'web_search': { icon: '🌐', label: '联网搜索' },
-          'metaso_search': { icon: '🌐', label: '联网搜索' },
-          'web_reader': { icon: '📄', label: '读取网页' },
-          'metaso_reader': { icon: '📄', label: '读取网页' },
-          'read_file': { icon: '📖', label: '读取文件' },
-          'write_file': { icon: '✏️', label: '写入文件' },
-          'list_directory': { icon: '📁', label: '浏览目录' },
-          'analyze_data': { icon: '📊', label: '分析数据' },
-          'run_command': { icon: '⚡', label: '执行命令' },
-          'file_manage': { icon: '📦', label: '管理文件' },
-          'open_application': { icon: '🚀', label: '打开应用' },
-          'open_file': { icon: '📂', label: '打开文件' },
-          'desktop_control': { icon: '🖥️', label: '桌面控制' },
-          'edit_file': { icon: '✏️', label: '修改文件' },
-          'city_lookup': { icon: '🏙️', label: '查询城市' },
-          'task_progress': { icon: '📋', label: '任务进度' },
-          'delegate_task': { icon: '🤖', label: '委派任务' },
-          'resume_agent': { icon: '🔄', label: '恢复助手' },
-          ...mcpService.getToolMeta(),
-        }
-
-        const meta = toolMeta[tc.name] || { icon: '🔧', label: tc.name }
-        callbacks.onChunk(`\n${meta.icon} 正在${meta.label}: "${queryDisplay}"...\n`)
-        fullContent += `\n${meta.icon} 正在${meta.label}: "${queryDisplay}"...\n`
+        callbacks.onChunk(`\n🤖 正在委派任务: "${queryDisplay}"...\n`)
+        fullContent += `\n🤖 正在委派任务: "${queryDisplay}"...\n`
 
         let result: string
-        if (tc.name === 'task_progress') {
-          result = executeTaskProgress(taskPlanRef, tc.arguments)
-          // Send structured progress chunk to frontend
-          if (taskPlanRef.current) {
-            const p = taskPlanRef.current
-            const completed = p.subtasks.filter((t) => t.status === 'completed').length
-            const current = p.subtasks.find((t) => t.status === 'in_progress')
-            const progressChunk = `\n📋 任务进度: [${completed}/${p.subtasks.length}] ${current ? `正在执行: ${current.title}` : p.goal}...\n`
-            callbacks.onChunk(progressChunk)
-            fullContent += progressChunk
-          }
-        } else if (tc.name === 'delegate_task') {
+        if (tc.name === 'delegate_task') {
           try {
             const args = JSON.parse(tc.arguments)
             const sas = await getSubAgentService()
             const subResult = await sas.executeTask(
               args.task || '',
               args.context,
-              callbacks,
             )
             result = JSON.stringify(subResult)
-          } catch (err: any) {
-            result = JSON.stringify({ success: false, error: err.message })
-          }
-        } else if (tc.name === 'resume_agent') {
-          try {
-            const args = JSON.parse(tc.arguments)
-            const sas = await getSubAgentService()
-            const subResult = await sas.resumeAgent(
-              args.agent_id || '',
-              args.additional_task || '',
-              callbacks,
-            )
-            result = JSON.stringify(subResult)
+
+            // Show brief status to user
+            if (subResult.success) {
+              const statusMsg = `\n✅ 任务执行完成\n`
+              callbacks.onChunk(statusMsg)
+              fullContent += statusMsg
+            } else {
+              const statusMsg = `\n❌ 任务执行失败: ${subResult.error || '未知错误'}\n`
+              callbacks.onChunk(statusMsg)
+              fullContent += statusMsg
+            }
           } catch (err: any) {
             result = JSON.stringify({ success: false, error: err.message })
           }
         } else {
-          result = await executeTool(tc.name, tc.arguments)
+          // AGENT should not call other tools, but handle gracefully
+          result = JSON.stringify({ error: `AGENT 不直接执行工具。请使用 delegate_task 委派任务。` })
         }
 
         messages.push({
@@ -1310,24 +1110,19 @@ export async function sendChatStream(
           content: result,
           tool_call_id: tc.id,
         })
-
-        // Show write/edit result status to user for transparency
-        if (tc.name === 'write_file' || tc.name === 'edit_file') {
-          try {
-            const parsed = JSON.parse(result)
-            if (parsed.success) {
-              const sizeKB = parsed.size ? ` (${(parsed.size / 1024).toFixed(1)}KB)` : ''
-              const statusMsg = `\n✅ ${tc.name === 'write_file' ? '文件已写入' : '文件已修改'}: ${parsed.path}${sizeKB}\n`
-              callbacks.onChunk(statusMsg)
-              fullContent += statusMsg
-            } else if (parsed.warning || parsed.error) {
-              const statusMsg = `\n⚠️ ${parsed.message || parsed.error || '操作未成功'}\n`
-              callbacks.onChunk(statusMsg)
-              fullContent += statusMsg
-            }
-          } catch { /* ignore */ }
-        }
       }
+
+      // Inject progress check to prevent context pollution causing premature stop
+      // Remove old progress check messages first
+      const filteredMessages = messages.filter(m => !(m.role === 'user' && typeof m.content === 'string' && m.content.startsWith('[进度检查]')))
+      messages.length = 0
+      messages.push(...filteredMessages)
+      // Inject new progress check
+      const originalRequest = userMessages[userMessages.length - 1]?.content || ''
+      messages.push({
+        role: 'user',
+        content: `[进度检查] 用户原始请求：「${typeof originalRequest === 'string' ? originalRequest.slice(0, 200) : ''}」。已完成${i + 1}轮委派。请检查是否所有工作已完成，未完成则继续 delegate_task。`,
+      })
 
       // Continue loop - next iteration will get the AI's response with tool results
     }

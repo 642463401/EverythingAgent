@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import type { ModelConfig, AppSettings, AppConfig } from '../types/config'
+import type { Skill } from '../types/skill'
 
 const api = typeof window !== 'undefined' ? window.electronAPI : null
 
@@ -110,4 +111,48 @@ export function useWindowEvents(onToggle?: () => void, onShowSettings?: () => vo
 
     return () => cleanups.forEach((fn) => fn())
   }, [onToggle, onShowSettings])
+}
+
+/** Hook for managing skills */
+export function useSkills() {
+  const [skills, setSkills] = useState<Skill[]>([])
+  const [loading, setLoading] = useState(true)
+
+  const refresh = useCallback(async () => {
+    if (!api) return
+    try {
+      const data = await api.skillsList()
+      setSkills(data)
+    } catch (err) {
+      console.error('Failed to load skills:', err)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  const saveSkill = useCallback(async (skill: Skill) => {
+    if (!api) return
+    try {
+      const result = await api.skillsSave(skill)
+      setSkills(result)
+    } catch (err) {
+      console.error('Failed to save skill:', err)
+    }
+  }, [])
+
+  const deleteSkill = useCallback(async (id: string) => {
+    if (!api) return
+    try {
+      const result = await api.skillsDelete(id)
+      setSkills(result)
+    } catch (err) {
+      console.error('Failed to delete skill:', err)
+    }
+  }, [])
+
+  useEffect(() => {
+    refresh()
+  }, [refresh])
+
+  return { skills, loading, saveSkill, deleteSkill, refresh }
 }
