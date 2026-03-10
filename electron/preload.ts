@@ -50,6 +50,14 @@ const electronAPI = {
   memoryDelete: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.MEMORY_DELETE, id),
   memoryClear: () => ipcRenderer.invoke(IPC_CHANNELS.MEMORY_CLEAR),
 
+  // ==================== Skills ====================
+  skillsList: () => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_LIST),
+  skillsSave: (skill: unknown) => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_SAVE, skill),
+  skillsDelete: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.SKILLS_DELETE, id),
+
+  // ==================== Dialog ====================
+  showOpenDialog: (options: unknown) => ipcRenderer.invoke(IPC_CHANNELS.SHOW_OPEN_DIALOG, options),
+
   // ==================== App ====================
   getAppPath: () => ipcRenderer.invoke(IPC_CHANNELS.GET_APP_PATH),
   openExternal: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.OPEN_EXTERNAL, url),
