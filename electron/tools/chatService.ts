@@ -755,6 +755,34 @@ export async function executeTool(name: string, argsJson: string): Promise<strin
 
 // ==================== Context Compression ====================
 
+/**
+ * Strip delegation status lines from old assistant messages to prevent the
+ * main Agent from being confused by previous turns' execution artifacts.
+ * Only the *last* assistant message is left untouched (it belongs to the
+ * current conversational context and hasn't been "answered" yet).
+ */
+const DELEGATION_STATUS_RE = /\n?[🤖✅❌⚠️][\s\S]*?\n/g
+
+function sanitizeHistoryMessages(msgs: ChatRequestMessage[]): ChatRequestMessage[] {
+  if (msgs.length === 0) return msgs
+
+  // Find the index of the last user message — everything before it is "history"
+  let lastUserIdx = -1
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].role === 'user') { lastUserIdx = i; break }
+  }
+  if (lastUserIdx <= 0) return msgs
+
+  return msgs.map((msg, idx) => {
+    // Only clean assistant messages that appear *before* the latest user message
+    if (idx >= lastUserIdx) return msg
+    if (msg.role !== 'assistant' || !msg.content) return msg
+
+    const cleaned = msg.content.replace(DELEGATION_STATUS_RE, '').trim()
+    return { ...msg, content: cleaned || msg.content }
+  })
+}
+
 const COMPRESSION_THRESHOLD = 8
 const MAX_TOOL_RESULT_LENGTH = 500
 
@@ -1008,9 +1036,15 @@ export async function sendChatStream(
     hour12: false,
   })
   const systemContent = `${SYSTEM_PROMPT}${buildMcpPromptSection()}${buildSkillsPromptSection()}${buildMemoryPromptSection()}\n\n当前时间: ${timestamp}`
+
+  // Clean delegation status artifacts from old assistant messages to prevent
+  // context pollution — the main Agent might skip delegation if it sees old
+  // "✅ 任务执行完成" lines and mistakes them for current-turn results.
+  const cleanedUserMessages = sanitizeHistoryMessages(userMessages)
+
   const messages: ChatRequestMessage[] = [
     { role: 'system', content: systemContent },
-    ...userMessages,
+    ...cleanedUserMessages,
   ]
 
   let fullContent = ''
@@ -1087,8 +1121,16 @@ export async function sendChatStream(
             )
             result = JSON.stringify(subResult)
 
-            // Show brief status to user
-            if (subResult.success) {
+            // Check for truncation and inject warning
+            if (subResult.truncated) {
+              result = JSON.stringify({
+                ...subResult,
+                _warning: `[警告] 此任务因迭代次数用尽(${subResult.iterationsUsed}/${15})而被截断，可能未完成。请检查执行摘要，对未完成的部分重新 delegate_task。`,
+              })
+              const statusMsg = `\n⚠️ 任务可能未完成（已达迭代上限 ${subResult.iterationsUsed} 轮）\n`
+              callbacks.onChunk(statusMsg)
+              fullContent += statusMsg
+            } else if (subResult.success) {
               const statusMsg = `\n✅ 任务执行完成\n`
               callbacks.onChunk(statusMsg)
               fullContent += statusMsg

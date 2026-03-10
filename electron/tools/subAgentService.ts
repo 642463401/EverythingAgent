@@ -171,17 +171,24 @@ class SubAgentService {
         adapter, url, headers, model.modelName, messages,
         controller.signal, agentId,
       )
-      finalContent = result
+      finalContent = result.content
 
       const filesAffected = extractFilesAffected(messages)
 
-      console.log(`[SubAgent ${agentId}] Task completed successfully`)
+      if (result.truncated) {
+        console.log(`[SubAgent ${agentId}] Task TRUNCATED after ${result.iterationsUsed} iterations`)
+        finalContent = `[⚠️ 任务被截断：已达迭代上限(${result.iterationsUsed}/${MAX_SUBAGENT_ITERATIONS})，任务可能未完成]\n\n${finalContent}`
+      } else {
+        console.log(`[SubAgent ${agentId}] Task completed successfully (${result.iterationsUsed} iterations)`)
+      }
 
       return {
         agentId,
         success: true,
         summary: finalContent,
         filesAffected,
+        truncated: result.truncated,
+        iterationsUsed: result.iterationsUsed,
       }
     } catch (err: any) {
       const errorMsg = err.name === 'AbortError' ? '任务被中断' : err.message
@@ -211,11 +218,13 @@ class SubAgentService {
     messages: ChatRequestMessage[],
     signal: AbortSignal,
     agentId: string,
-  ): Promise<string> {
+  ): Promise<{ content: string; truncated: boolean; iterationsUsed: number }> {
     let finalContent = ''
     const tools = buildSubAgentTools()
+    let lastHadToolCalls = false
 
-    for (let i = 0; i < MAX_SUBAGENT_ITERATIONS; i++) {
+    let i = 0
+    for (; i < MAX_SUBAGENT_ITERATIONS; i++) {
       // Compress old messages to manage context window
       compressMessages(messages)
 
@@ -227,6 +236,7 @@ class SubAgentService {
       )
 
       finalContent = content
+      lastHadToolCalls = toolCalls.length > 0
 
       if (toolCalls.length === 0) break
 
@@ -255,7 +265,11 @@ class SubAgentService {
       }
     }
 
-    return finalContent
+    // Truncated if we exhausted all iterations and the last round still had tool calls
+    const truncated = i >= MAX_SUBAGENT_ITERATIONS && lastHadToolCalls
+    const iterationsUsed = Math.min(i + (lastHadToolCalls ? 0 : 1), MAX_SUBAGENT_ITERATIONS)
+
+    return { content: finalContent, truncated, iterationsUsed }
   }
 }
 
