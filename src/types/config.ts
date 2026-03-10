@@ -80,6 +80,8 @@ export interface SubAgentResult {
   summary: string
   filesAffected: string[]
   error?: string
+  truncated?: boolean        // 是否因迭代上限截断
+  iterationsUsed?: number    // 实际使用的迭代次数
 }
 
 /** Everything Search result */
