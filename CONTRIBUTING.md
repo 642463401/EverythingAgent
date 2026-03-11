@@ -13,7 +13,7 @@
 | 动画 | Framer Motion 12 |
 | UI 组件 | shadcn/ui (Radix UI) |
 | 配置持久化 | electron-store (加密 JSON) |
-| 本地搜索 | Everything 便携版 (自动启停) + es.exe (child_process) |
+| 本地搜索 | 原生文件索引（Node.js readdir 后台建索引 + readline 流式查询） |
 | 联网搜索 | 秘塔 AI REST API |
 | 命令执行 | child_process.spawn + GBK 解码 |
 | 打包 | electron-builder → NSIS .exe 安装程序 |
@@ -27,7 +27,7 @@ EverythingAgent/
 │   ├── preload.ts               #   contextBridge 安全桥接
 │   ├── configManager.ts         #   electron-store 配置管理器（含对话历史 + AI 记忆）
 │   └── tools/
-│       ├── everythingSearch.ts   #   Everything 搜索工具
+│       ├── everythingSearch.ts   #   原生文件搜索（后台索引 + 实时遍历回退）
 │       ├── webSearch.ts          #   秘塔 AI 联网搜索 + 网页阅读
 │       ├── fileTools.ts          #   文件读写 / 目录浏览 / 数据分析
 │       ├── commandRunner.ts      #   命令执行工具（安全沙箱）
@@ -35,6 +35,9 @@ EverythingAgent/
 │       ├── documentGenerator.ts  #   Office 文档生成（Python + 回退）
 │       ├── mcpService.ts         #   MCP 服务管理（第三方工具接入）
 │       ├── cityLookup.ts         #   城市 ID 查询
+│       ├── subAgentService.ts    #   SubAgent 任务委派服务
+│       ├── skillService.ts       #   Skills 技能执行服务
+│       ├── adapters/             #   多模型供应商适配器
 │       └── chatService.ts        #   AI 对话服务（流式 + 工具调用 + 记忆提炼）
 ├── src/                         # 渲染进程 (React)
 │   ├── App.tsx                  #   根组件
@@ -43,7 +46,7 @@ EverythingAgent/
 │   ├── components/
 │   │   ├── SpotlightBar.tsx     #   Spotlight 浮动输入栏
 │   │   ├── ChatWindow.tsx       #   AI 对话窗口
-│   │   ├── SearchResults.tsx    #   Everything 搜索结果列表
+│   │   ├── SearchResults.tsx    #   文件搜索结果列表
 │   │   ├── ToolStatusIndicator.tsx  # 工具执行状态显示
 │   │   ├── TaskProgressIndicator.tsx # 任务进度可视化
 │   │   ├── settings/            #   设置面板
@@ -60,15 +63,11 @@ EverythingAgent/
 │   └── types/
 │       └── config.ts            #   TypeScript 类型定义 + IPC 通道
 ├── resources/
-│   ├── everything/              #   Everything 便携版
-│   │   ├── Everything.lng
-│   │   └── es.exe               #   Everything CLI 搜索工具
 │   └── citydata/
 │       └── cities.csv           #   城市信息数据
 ├── build/
 │   ├── logo.png                 #   应用图标源文件
-│   ├── icon.ico                 #   转换后的 Windows ICO 图标
-│   └── installer.nsh            #   NSIS 自定义安装脚本
+│   └── icon.ico                 #   转换后的 Windows ICO 图标
 ├── scripts/
 │   └── convert-icon.js          #   PNG → ICO 图标转换脚本
 ├── docs/
@@ -136,7 +135,7 @@ npm run build
 构建产物输出到 `release/` 目录：
 
 ```
-release/EverythingAgent-1.0.0-Setup.exe
+release/EverythingAgent-x.x.x-Setup.exe
 ```
 
 ### 应用图标
@@ -155,13 +154,15 @@ release/EverythingAgent-1.0.0-Setup.exe
 ├── configManager — 配置持久化 (electron-store)
 └── tools/
     ├── chatService — AI 对话引擎（流式 + 工具调用循环）
-    ├── everythingSearch — Everything 本地搜索
+    ├── subAgentService — SubAgent 任务委派（隔离上下文执行）
+    ├── everythingSearch — 原生文件搜索（后台索引 + 实时遍历回退）
     ├── webSearch — 联网搜索 + 网页阅读
     ├── fileTools — 文件读写 + 数据分析
     ├── commandRunner — 命令执行（安全沙箱）
     ├── fileManager — 文件管理 + 应用启动
     ├── documentGenerator — Office 文档生成
     ├── mcpService — MCP 第三方工具接入
+    ├── skillService — Skills 技能执行
     └── cityLookup — 城市 ID 查询
 
 渲染进程 (src/)
@@ -173,6 +174,15 @@ release/EverythingAgent-1.0.0-Setup.exe
 └── settings/ — 设置面板（模型配置/通用设置/记忆管理）
 ```
 
+### 文件搜索架构
+
+本地文件搜索采用**后台索引 + 实时回退**双模式：
+
+1. **后台索引**：应用启动时自动扫描所有磁盘，使用 Node.js `readdir` 递归遍历构建文件路径索引（文本文件），跳过 `node_modules`、`.git`、`$Recycle.Bin` 等目录
+2. **索引搜索**：使用 `readline` 流式逐行匹配索引文件，毫秒级返回结果
+3. **实时回退**：索引未就绪时，使用 Node.js 递归遍历实时搜索，优先搜索用户目录（Desktop/Documents/Downloads），15 秒超时保护
+4. **索引刷新**：索引有效期 2 小时，过期自动重建
+
 ### IPC 通信
 
 主进程与渲染进程通过 `contextBridge` (preload.ts) 安全桥接，所有通道定义在 `src/types/config.ts` 中。
@@ -180,9 +190,10 @@ release/EverythingAgent-1.0.0-Setup.exe
 ### AI 工具调用流程
 
 1. 用户发送消息 → `chatService` 构建请求（含工具定义 + 记忆上下文）
-2. AI 返回工具调用 → 路由到对应工具执行 → 结果回传
-3. 循环迭代（最多 30 轮），直到 AI 返回最终文本回复
-4. 对话结束后自动提炼记忆
+2. 主 Agent 分析任务 → 通过 `delegate_task` 委派给 SubAgent 执行
+3. SubAgent 在隔离上下文中调用工具（搜索/读写/命令等）→ 返回结构化结果
+4. 主 Agent 汇总结果回复用户，必要时继续委派子任务
+5. 对话结束后自动提炼记忆
 
 ## 提交代码
 
