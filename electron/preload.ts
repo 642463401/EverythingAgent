@@ -62,7 +62,7 @@ const electronAPI = {
   getAppPath: () => ipcRenderer.invoke(IPC_CHANNELS.GET_APP_PATH),
   openExternal: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.OPEN_EXTERNAL, url),
 
-  // ==================== Everything Search ====================
+  // ==================== File Search ====================
   everythingSearch: (options: unknown) => ipcRenderer.invoke(IPC_CHANNELS.EVERYTHING_SEARCH, options),
   everythingAvailable: () => ipcRenderer.invoke(IPC_CHANNELS.EVERYTHING_AVAILABLE),
   everythingOpen: (fullPath: string) => ipcRenderer.invoke(IPC_CHANNELS.EVERYTHING_OPEN, fullPath),

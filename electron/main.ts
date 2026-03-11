@@ -12,7 +12,7 @@ import {
 import path from 'node:path'
 import { configManager, conversationManager, memoryManager, skillManager } from './configManager'
 import { IPC_CHANNELS } from '../src/types/config'
-import { searchEverything, isEverythingAvailable, openSearchResult, revealInExplorer, ensureEverythingRunning, stopEverything } from './tools/everythingSearch'
+import { searchNative, isSearchAvailable, openSearchResult, revealInExplorer, startIndexBuild } from './tools/everythingSearch'
 import { sendChatStream, abortChatRequest } from './tools/chatService'
 import { mcpService } from './tools/mcpService'
 
@@ -281,15 +281,15 @@ function setupIPC() {
     return dialog.showOpenDialog(win, options)
   })
 
-  // ==================== Everything Search ====================
+  // ==================== File Search ====================
   ipcMain.handle(IPC_CHANNELS.EVERYTHING_SEARCH, async (_event, options) => {
     try {
-      return { success: true, data: await searchEverything(options) }
+      return { success: true, data: await searchNative(options) }
     } catch (err: any) {
       return { success: false, error: err.message }
     }
   })
-  ipcMain.handle(IPC_CHANNELS.EVERYTHING_AVAILABLE, () => isEverythingAvailable())
+  ipcMain.handle(IPC_CHANNELS.EVERYTHING_AVAILABLE, () => isSearchAvailable())
   ipcMain.handle(IPC_CHANNELS.EVERYTHING_OPEN, async (_event, fullPath: string) => {
     try { await openSearchResult(fullPath); return { success: true } } catch (err: any) { return { success: false, error: err.message } }
   })
@@ -370,11 +370,8 @@ app.on('ready', () => {
   setupIPC()
   registerGlobalShortcut()
 
-  // Start portable Everything.exe in the background
-  if (isEverythingAvailable()) {
-    ensureEverythingRunning()
-    console.log('[main] Everything portable started')
-  }
+  // Build file search index in the background
+  startIndexBuild().catch((err) => console.error('[main] Index build error:', err))
 
   setTimeout(() => showWindow(), 500)
 })
@@ -382,7 +379,6 @@ app.on('ready', () => {
 app.on('window-all-closed', () => { /* keep running in tray */ })
 app.on('will-quit', () => {
   globalShortcut.unregisterAll()
-  stopEverything()
   mcpService.shutdown().catch(() => {})
 })
 app.on('activate', () => { if (!mainWindow) createWindow() })

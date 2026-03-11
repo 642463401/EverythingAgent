@@ -1,10 +1,10 @@
 /**
  * AI Chat Service with Tool Calling support.
- * The AI can autonomously invoke Everything search via OpenAI-compatible function calling.
+ * The AI can autonomously invoke native file search via OpenAI-compatible function calling.
  */
 
 import { configManager, memoryManager, skillManager } from '../configManager'
-import { searchEverything } from './everythingSearch'
+import { searchNative } from './everythingSearch'
 import { webSearch, webReader, isWebSearchAvailable } from './webSearch'
 import { readFile, writeFile, editFile, listDirectory, analyzeData } from './fileTools'
 import { runCommand } from './commandRunner'
@@ -71,7 +71,7 @@ delegate_task 使用方法：
 - 执行助手没有对话上下文，所以不要用"之前的文件"、"上面提到的"等模糊引用。
 
 执行助手可用的工具：
-- everything_search：本地文件搜索（Everything引擎）
+- everything_search：本地文件搜索（原生Windows搜索）
 - web_search / web_reader：联网搜索和网页读取
 - read_file：读取文件内容（支持文本、代码、PDF等）
 - write_file：创建/写入文件
@@ -107,7 +107,7 @@ export function buildTools() {
       type: 'function' as const,
       function: {
         name: 'everything_search',
-        description: '在用户的 Windows 电脑上搜索本地文件和文件夹。使用 Everything 搜索引擎，速度极快。支持通配符 * 和 ?',
+        description: '在用户的 Windows 电脑上搜索本地文件和文件夹。使用原生文件搜索（Windows Search Index + dir 扫描），无需外部依赖。支持通配符 * 和 ?',
         parameters: {
           type: 'object',
           properties: {
@@ -539,7 +539,7 @@ export async function executeTool(name: string, argsJson: string): Promise<strin
   if (name === 'everything_search') {
     try {
       const args = JSON.parse(argsJson)
-      const results = await searchEverything({
+      const results = await searchNative({
         query: args.query || '',
         maxResults: args.maxResults || 20,
         foldersOnly: args.foldersOnly || false,

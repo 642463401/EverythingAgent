@@ -84,7 +84,7 @@ export interface SubAgentResult {
   iterationsUsed?: number    // 实际使用的迭代次数
 }
 
-/** Everything Search result */
+/** File Search result */
 export interface SearchResult {
   fullPath: string
   fileName: string
@@ -92,7 +92,7 @@ export interface SearchResult {
   isDirectory: boolean
 }
 
-/** Everything Search options */
+/** File Search options */
 export interface SearchOptions {
   query: string
   maxResults?: number
@@ -145,7 +145,7 @@ export const IPC_CHANNELS = {
   GET_APP_PATH: 'app:get-path',
   OPEN_EXTERNAL: 'app:open-external',
 
-  // Everything Search
+  // File Search
   EVERYTHING_SEARCH: 'everything:search',
   EVERYTHING_AVAILABLE: 'everything:available',
   EVERYTHING_OPEN: 'everything:open',

@@ -127,7 +127,7 @@ export function SearchResults({
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-1.5">
           <span className="text-[11px] text-muted-foreground/50 font-medium uppercase tracking-wider">
-            Everything 本地搜索
+            本地文件搜索
           </span>
           {!isLoading && results.length > 0 && (
             <span className="text-[11px] text-muted-foreground/40">
@@ -152,7 +152,7 @@ export function SearchResults({
               未找到匹配的文件
             </p>
             <p className="text-[11px] text-muted-foreground/30 mt-0.5">
-              请确保 Everything 服务正在运行
+              尝试使用通配符搜索，如 *.pdf
             </p>
           </div>
         )}
