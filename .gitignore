@@ -17,3 +17,6 @@ nul
 # Installers & binary artifacts
 *.exe
 *.zip
+
+# Allow Everything portable binaries
+!resources/everything/*.exe
