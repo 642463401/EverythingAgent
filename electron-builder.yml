@@ -11,10 +11,6 @@ files:
   - dist-electron
 
 extraResources:
-  - from: resources/everything
-    to: everything
-    filter:
-      - "**/*"
   - from: resources/citydata
     to: citydata
     filter:
@@ -30,6 +26,7 @@ win:
   icon: build/icon.ico
   artifactName: ${productName}-${version}-Setup.${ext}
   signAndEditExecutable: false
+  requestedExecutionLevel: asInvoker
 
 # 添加应用图标到程序文件
 extraFiles:
@@ -47,10 +44,7 @@ nsis:
   deleteAppDataOnUninstall: false
   # 允许覆盖安装
   allowElevation: true
-  # 安装前卸载旧版本
   uninstallerIcon: build/icon.ico
-  # 自定义 NSIS 脚本 - 引导安装 Everything
-  include: build/installer.nsh
 
 asar: true
 

@@ -258,7 +258,7 @@ const BLOCKED_APPS = new Set([
 /**
  * Open an application by name.
  * First checks the known app map, then tries `start` command,
- * then falls back to Everything search for the .exe path.
+ * then falls back to native file search for the .exe path.
  */
 export async function openApplication(appName: string): Promise<string> {
   if (!appName || appName.trim() === '') {
@@ -287,10 +287,10 @@ export async function openApplication(appName: string): Promise<string> {
     return directResult
   }
 
-  // Fallback: try searching for the executable via Everything
+  // Fallback: try searching for the executable via native search
   try {
-    const { searchEverything } = await import('./everythingSearch')
-    const results = await searchEverything({
+    const { searchNative } = await import('./everythingSearch')
+    const results = await searchNative({
       query: `${name}.exe`,
       maxResults: 5,
       filesOnly: true,

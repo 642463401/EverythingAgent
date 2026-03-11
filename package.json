@@ -1,6 +1,6 @@
 {
   "name": "everything-agent",
-  "version": "2.0.2",
+  "version": "3.0.0",
   "description": "EverythingAgent - Native Desktop AI Assistant",
   "main": "dist-electron/main.js",
   "author": "EverythingAgent",
