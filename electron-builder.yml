@@ -17,6 +17,10 @@ extraResources:
       - "**/*"
   - from: build/icon.ico
     to: icon.ico
+  - from: resources/python
+    to: python
+    filter:
+      - "**/*"
 
 win:
   target:

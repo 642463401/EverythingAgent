@@ -205,13 +205,13 @@ export function buildTools() {
     type: 'function' as const,
     function: {
       name: 'write_file',
-      description: '创建或写入文本文件。适用于生成 Markdown 文档、代码文件、配置文件等。支持 .md/.txt/.csv/.json/.html/.py/.js 等文本格式。生成文档时优先使用 Markdown 格式直接写入。',
+      description: '创建或写入文本文件。仅在用户明确要求保存/创建文件时才调用此工具，不要用于输出执行结果或摘要。支持 .md/.txt/.csv/.json/.html/.py/.js 等文本格式。',
       parameters: {
         type: 'object',
         properties: {
           path: {
             type: 'string',
-            description: '文件绝对路径。例如: "C:\\Users\\user\\Desktop\\report.md", "D:\\output\\script.py"',
+            description: '文件绝对路径。默认保存到用户的 EverythingAgent\\Projects 目录，例如: "C:\\Users\\user\\EverythingAgent\\Projects\\report.md"。若用户指定了其他路径则使用用户指定的路径。',
           },
           content: {
             type: 'string',

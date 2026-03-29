@@ -7,6 +7,7 @@
 import { spawn } from 'node:child_process'
 import path from 'node:path'
 import { app } from 'electron'
+import { getBundledPythonDir } from './pythonHelper'
 
 // ==================== Constants ====================
 
@@ -142,11 +143,18 @@ export async function runCommand(
     const shell = isWindows ? 'cmd.exe' : '/bin/sh'
     const shellArgs = isWindows ? ['/c', cmd] : ['-c', cmd]
 
+    // Inject bundled Python into PATH so 'python' / 'pip' resolve to the project environment
+    const pythonDir = getBundledPythonDir()
+    const currentPath = process.env.PATH || ''
+    const envPath = pythonDir
+      ? `${pythonDir};${path.join(pythonDir, 'Scripts')};${currentPath}`
+      : currentPath
+
     const child = spawn(shell, shellArgs, {
       cwd: workDir,
       windowsHide: true,
       timeout: actualTimeout,
-      env: { ...process.env },
+      env: { ...process.env, PATH: envPath },
     })
 
     const stdoutChunks: Buffer[] = []
