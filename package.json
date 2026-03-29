@@ -7,7 +7,8 @@
   "license": "GPL-3.0-or-later",
   "scripts": {
     "dev": "vite",
-    "build": "npm run build:icon && tsc --noEmit && vite build && cross-env ELECTRON_BUILDER_CACHE=E:/electron-builder-cache TEMP=E:/tmp TMP=E:/tmp electron-builder",
+    "setup:python": "node scripts/setup-python.js",
+    "build": "npm run setup:python && npm run build:icon && tsc --noEmit && vite build && cross-env ELECTRON_BUILDER_CACHE=E:/electron-builder-cache TEMP=E:/tmp TMP=E:/tmp electron-builder",
     "build:vite": "tsc --noEmit && vite build",
     "build:icon": "node scripts/convert-icon.js",
     "preview": "vite preview",
