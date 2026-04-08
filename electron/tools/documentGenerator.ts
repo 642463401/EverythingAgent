@@ -223,7 +223,6 @@ if __name__ == '__main__':
 function generateMarkdownToPdfScript(outputPath: string, mdFilePath: string, title: string): string {
   const safeOutput = outputPath.replace(/\\/g, '\\\\')
   const safeMdPath = mdFilePath.replace(/\\/g, '\\\\')
-  const safeTitle = title.replace(/'/g, "\\'")
 
   return `# -*- coding: utf-8 -*-
 import sys
@@ -259,87 +258,80 @@ def main():
     if os.path.exists(msyh_path):
         safe_font_path = msyh_path.replace('\\\\', '/')
         font_face = """
-        @font-face {
+        @font-face {{
             font-family: 'MSYH';
-            src: url('file:///%s');
-        }
-        """ % safe_font_path
+            src: url('file:///{font_path}');
+        }}
+        """.format(font_path=safe_font_path)
         font_family = "MSYH, Helvetica, Arial, sans-serif"
 
-    # Build complete HTML with embedded CSS
-    html = """<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<style>
-%s
-body {
-    font-family: %s;
+    # Build complete HTML — use string concatenation to avoid % formatting issues
+    # (html_body may contain % characters from user content)
+    css = """
+body {{
+    font-family: {font};
     font-size: 12px;
     line-height: 1.6;
     color: #333;
     margin: 0;
     padding: 20px 40px;
-}
-h1 { font-size: 24px; color: #1a1a1a; border-bottom: 2px solid #e1e4e8; padding-bottom: 8px; margin-top: 24px; }
-h2 { font-size: 20px; color: #24292e; border-bottom: 1px solid #e1e4e8; padding-bottom: 6px; margin-top: 20px; }
-h3 { font-size: 16px; color: #24292e; margin-top: 16px; }
-h4 { font-size: 14px; color: #24292e; margin-top: 14px; }
-h5, h6 { font-size: 12px; color: #6a737d; margin-top: 12px; }
-p { margin: 8px 0; }
-code {
+}}
+h1 {{ font-size: 24px; color: #1a1a1a; border-bottom: 2px solid #e1e4e8; padding-bottom: 8px; margin-top: 24px; }}
+h2 {{ font-size: 20px; color: #24292e; border-bottom: 1px solid #e1e4e8; padding-bottom: 6px; margin-top: 20px; }}
+h3 {{ font-size: 16px; color: #24292e; margin-top: 16px; }}
+h4 {{ font-size: 14px; color: #24292e; margin-top: 14px; }}
+h5, h6 {{ font-size: 12px; color: #6a737d; margin-top: 12px; }}
+p {{ margin: 8px 0; }}
+code {{
     background-color: #f0f0f0;
     padding: 2px 6px;
-    border-radius: 3px;
     font-family: Consolas, 'Courier New', monospace;
     font-size: 11px;
-}
-pre {
+}}
+pre {{
     background-color: #f6f8fa;
     border: 1px solid #e1e4e8;
-    border-radius: 6px;
     padding: 12px 16px;
-    overflow-x: auto;
     line-height: 1.45;
-}
-pre code {
+}}
+pre code {{
     background: none;
     padding: 0;
     font-size: 11px;
-}
-blockquote {
+}}
+blockquote {{
     border-left: 4px solid #dfe2e5;
     padding: 4px 16px;
     margin: 8px 0;
     color: #6a737d;
     background-color: #f9f9f9;
-}
-table {
+}}
+table {{
     border-collapse: collapse;
-    width: 100%%;
+    width: 100%;
     margin: 12px 0;
-}
-th, td {
+}}
+th, td {{
     border: 1px solid #dfe2e5;
     padding: 8px 12px;
     text-align: left;
-}
-th {
+}}
+th {{
     background-color: #f6f8fa;
     font-weight: 600;
-}
-tr:nth-child(even) { background-color: #f9f9f9; }
-ul, ol { padding-left: 24px; margin: 8px 0; }
-li { margin: 4px 0; }
-hr { border: none; border-top: 1px solid #e1e4e8; margin: 16px 0; }
-a { color: #0366d6; text-decoration: none; }
-img { max-width: 100%%; }
-</style>
-</head>
-<body>
-%s
-</body>
-</html>""" % (font_face, font_family, html_body)
+}}
+ul, ol {{ padding-left: 24px; margin: 8px 0; }}
+li {{ margin: 4px 0; }}
+hr {{ border: none; border-top: 1px solid #e1e4e8; margin: 16px 0; }}
+a {{ color: #0366d6; text-decoration: none; }}
+img {{ max-width: 100%; }}
+""".format(font=font_family)
+
+    html = '<!DOCTYPE html><html><head><meta charset="utf-8"><style>'
+    html += font_face + css
+    html += '</style></head><body>'
+    html += html_body
+    html += '</body></html>'
 
     # Convert HTML to PDF
     with open(r'${safeOutput}', 'wb') as out_file:
@@ -572,14 +564,20 @@ export async function createDocument(
     const script = generateMarkdownToPdfScript(resolved, mdTmpPath, content.title || '文档')
 
     const scriptPath = await writeTempScript(script)
+    let lastError = ''
+
     try {
       let result = JSON.parse(await runCommand(`${python} "${scriptPath}"`, undefined, 60000))
 
       // Auto-install missing dependencies
       if (result.exitCode === 2 || (result.stderr && result.stderr.includes('NEED_INSTALL'))) {
+        console.log('[documentGenerator] Installing markdown + xhtml2pdf...')
         const libs = ['markdown', 'xhtml2pdf']
         for (const lib of libs) {
-          await runCommand(`${python} -m pip install ${lib}`, undefined, 120000)
+          const installResult = JSON.parse(await runCommand(`${python} -m pip install ${lib}`, undefined, 120000))
+          if (installResult.exitCode !== 0) {
+            lastError = `安装 ${lib} 失败: ${installResult.stderr || installResult.stdout}`
+          }
         }
         result = JSON.parse(await runCommand(`${python} "${scriptPath}"`, undefined, 60000))
       }
@@ -588,19 +586,32 @@ export async function createDocument(
       try { await fsp.unlink(mdTmpPath) } catch { /* ignore */ }
 
       if (result.exitCode === 0) {
-        const stat = await fsp.stat(resolved)
-        return JSON.stringify({
-          success: true,
-          type: 'pdf',
-          path: resolved,
-          size: stat.size,
-          message: `PDF 文档已生成: ${resolved}`,
-        })
+        try {
+          const stat = await fsp.stat(resolved)
+          return JSON.stringify({
+            success: true,
+            type: 'pdf',
+            path: resolved,
+            size: stat.size,
+            message: `PDF 文档已生成: ${resolved}`,
+          })
+        } catch {
+          lastError = `脚本执行成功但文件未创建: ${resolved}`
+        }
+      } else {
+        lastError = result.stderr || result.stdout || '脚本执行返回非零退出码'
+        console.error(`[documentGenerator] PDF script failed: ${lastError}`)
       }
-    } catch { /* fallthrough to markdown fallback */ }
+    } catch (err: any) {
+      lastError = err.message || '未知错误'
+      console.error(`[documentGenerator] PDF generation error: ${lastError}`)
+    }
 
+    // Cleanup temp files
     await cleanupScript(scriptPath)
     try { await fsp.unlink(mdTmpPath) } catch { /* ignore */ }
+
+    // Fallback to Markdown
     const mdPath = resolved.replace(/\.pdf$/i, '.md')
     const md = generateMarkdownFallback(content)
     const writeResult = await writeFile(mdPath, md)
@@ -610,6 +621,7 @@ export async function createDocument(
       fallback: true,
       originalType: 'pdf',
       message: `PDF 生成失败，已自动生成 Markdown 格式文档: ${mdPath}`,
+      scriptError: lastError,
     })
   }
 
