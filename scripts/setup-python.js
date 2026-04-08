@@ -17,7 +17,7 @@ const os = require('os')
 const PYTHON_VERSION = '3.11.9'
 const PYTHON_DIR = path.join(__dirname, '..', 'resources', 'python')
 const PYTHON_EXE = path.join(PYTHON_DIR, 'python.exe')
-const REQUIRED_PACKAGES = ['python-docx', 'openpyxl', 'python-pptx', 'reportlab']
+const REQUIRED_PACKAGES = ['python-docx', 'openpyxl', 'python-pptx', 'reportlab>=4.0,<4.1', 'markdown', 'xhtml2pdf>=0.2.11']
 
 const PYTHON_ZIP_URL = `https://www.python.org/ftp/python/${PYTHON_VERSION}/python-${PYTHON_VERSION}-embed-amd64.zip`
 const GET_PIP_URL = 'https://bootstrap.pypa.io/get-pip.py'
@@ -98,7 +98,7 @@ function run(cmd, opts = {}) {
 
 function isPackagesInstalled() {
   try {
-    execSync(`"${PYTHON_EXE}" -c "import docx, openpyxl, pptx, reportlab"`, { stdio: 'pipe' })
+    execSync(`"${PYTHON_EXE}" -c "import docx, openpyxl, pptx, reportlab, markdown; from xhtml2pdf import pisa"`, { stdio: 'pipe' })
     return true
   } catch {
     return false
@@ -174,6 +174,21 @@ async function main() {
   run(
     `"${PYTHON_EXE}" -m pip install ${REQUIRED_PACKAGES.join(' ')} --no-cache-dir --no-warn-script-location --disable-pip-version-check`
   )
+
+  // --- Remove cairo-related packages that cause OSError in embeddable Python ---
+  // rlPyCairo/cairocffi/pycairo require system-level libcairo-2.dll which is not
+  // available in embeddable Python. Removing them lets reportlab fall back to its
+  // built-in rendering backend, which works fine for PDF generation.
+  const cairoPackages = ['rlPyCairo', 'cairocffi', 'pycairo']
+  for (const pkg of cairoPackages) {
+    try {
+      execSync(`"${PYTHON_EXE}" -m pip show ${pkg}`, { stdio: 'pipe' })
+      log(`Removing incompatible package: ${pkg}`)
+      run(`"${PYTHON_EXE}" -m pip uninstall ${pkg} -y --no-warn-script-location --disable-pip-version-check`)
+    } catch {
+      // Package not installed, skip
+    }
+  }
 
   log('Python setup complete!')
   log(`Python executable: ${PYTHON_EXE}`)
