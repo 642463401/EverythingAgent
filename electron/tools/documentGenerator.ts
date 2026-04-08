@@ -10,6 +10,7 @@ import os from 'node:os'
 import { app } from 'electron'
 import { runCommand } from './commandRunner'
 import { writeFile } from './fileTools'
+import { getBundledPythonDir } from './pythonHelper'
 
 // ==================== Types ====================
 
@@ -48,7 +49,20 @@ function safeResolve(filePath: string): string {
 }
 
 async function checkPython(): Promise<string | null> {
-  // Try python first, then python3
+  // 1. Prefer bundled Python (absolute path — guaranteed to have all dependencies)
+  const bundledDir = getBundledPythonDir()
+  if (bundledDir) {
+    const bundledExe = path.join(bundledDir, 'python.exe')
+    try {
+      const stat = await fsp.stat(bundledExe)
+      if (stat.isFile()) {
+        console.log('[documentGenerator] Using bundled Python:', bundledExe)
+        return `"${bundledExe}"`
+      }
+    } catch { /* not found, fall through */ }
+  }
+
+  // 2. Fallback to system Python via runCommand (PATH injection still applies)
   for (const cmd of ['python', 'python3']) {
     const result = JSON.parse(await runCommand(`${cmd} --version`))
     if (result.exitCode === 0 && result.stdout?.includes('Python')) {
