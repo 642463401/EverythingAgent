@@ -218,6 +218,144 @@ if __name__ == '__main__':
 `
 }
 
+// ==================== Markdown → PDF Script ====================
+
+function generateMarkdownToPdfScript(outputPath: string, mdFilePath: string, title: string): string {
+  const safeOutput = outputPath.replace(/\\/g, '\\\\')
+  const safeMdPath = mdFilePath.replace(/\\/g, '\\\\')
+  const safeTitle = title.replace(/'/g, "\\'")
+
+  return `# -*- coding: utf-8 -*-
+import sys
+try:
+    import markdown
+    from xhtml2pdf import pisa
+except ImportError:
+    print("NEED_INSTALL:markdown,xhtml2pdf", file=sys.stderr)
+    sys.exit(2)
+
+def main():
+    import os
+
+    # Read markdown source from temp file
+    with open(r'${safeMdPath}', 'r', encoding='utf-8') as f:
+        md_text = f.read()
+
+    # Convert Markdown to HTML with extensions
+    html_body = markdown.markdown(md_text, extensions=[
+        'fenced_code',
+        'tables',
+        'toc',
+        'sane_lists',
+        'nl2br',
+        'attr_list',
+    ])
+
+    # Detect Chinese font
+    font_face = ''
+    font_family = 'Helvetica, Arial, sans-serif'
+    windir = os.environ.get('WINDIR', 'C:\\\\Windows')
+    msyh_path = os.path.join(windir, 'Fonts', 'msyh.ttc')
+    if os.path.exists(msyh_path):
+        safe_font_path = msyh_path.replace('\\\\', '/')
+        font_face = """
+        @font-face {
+            font-family: 'MSYH';
+            src: url('file:///%s');
+        }
+        """ % safe_font_path
+        font_family = "MSYH, Helvetica, Arial, sans-serif"
+
+    # Build complete HTML with embedded CSS
+    html = """<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+%s
+body {
+    font-family: %s;
+    font-size: 12px;
+    line-height: 1.6;
+    color: #333;
+    margin: 0;
+    padding: 20px 40px;
+}
+h1 { font-size: 24px; color: #1a1a1a; border-bottom: 2px solid #e1e4e8; padding-bottom: 8px; margin-top: 24px; }
+h2 { font-size: 20px; color: #24292e; border-bottom: 1px solid #e1e4e8; padding-bottom: 6px; margin-top: 20px; }
+h3 { font-size: 16px; color: #24292e; margin-top: 16px; }
+h4 { font-size: 14px; color: #24292e; margin-top: 14px; }
+h5, h6 { font-size: 12px; color: #6a737d; margin-top: 12px; }
+p { margin: 8px 0; }
+code {
+    background-color: #f0f0f0;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-family: Consolas, 'Courier New', monospace;
+    font-size: 11px;
+}
+pre {
+    background-color: #f6f8fa;
+    border: 1px solid #e1e4e8;
+    border-radius: 6px;
+    padding: 12px 16px;
+    overflow-x: auto;
+    line-height: 1.45;
+}
+pre code {
+    background: none;
+    padding: 0;
+    font-size: 11px;
+}
+blockquote {
+    border-left: 4px solid #dfe2e5;
+    padding: 4px 16px;
+    margin: 8px 0;
+    color: #6a737d;
+    background-color: #f9f9f9;
+}
+table {
+    border-collapse: collapse;
+    width: 100%%;
+    margin: 12px 0;
+}
+th, td {
+    border: 1px solid #dfe2e5;
+    padding: 8px 12px;
+    text-align: left;
+}
+th {
+    background-color: #f6f8fa;
+    font-weight: 600;
+}
+tr:nth-child(even) { background-color: #f9f9f9; }
+ul, ol { padding-left: 24px; margin: 8px 0; }
+li { margin: 4px 0; }
+hr { border: none; border-top: 1px solid #e1e4e8; margin: 16px 0; }
+a { color: #0366d6; text-decoration: none; }
+img { max-width: 100%%; }
+</style>
+</head>
+<body>
+%s
+</body>
+</html>""" % (font_face, font_family, html_body)
+
+    # Convert HTML to PDF
+    with open(r'${safeOutput}', 'wb') as out_file:
+        status = pisa.CreatePDF(html, dest=out_file, encoding='utf-8')
+
+    if status.err:
+        print(f"PDF conversion error: {status.err}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"SUCCESS:{r'${safeOutput}'}")
+
+if __name__ == '__main__':
+    main()
+`
+}
+
 // ==================== Markdown Fallback ====================
 
 function generateMarkdownFallback(content: DocumentContent): string {
@@ -409,7 +547,7 @@ export async function createDocument(
     }
   }
 
-  // PDF - try Python with reportlab, fallback to Markdown
+  // PDF - Markdown → HTML → PDF pipeline using markdown + xhtml2pdf
   if (docType === 'pdf') {
     const python = await checkPython()
     if (!python) {
@@ -425,68 +563,29 @@ export async function createDocument(
       })
     }
 
-    const title = (content.title || '文档').replace(/'/g, "\\'")
-    const mdContent = generateMarkdownFallback(content).replace(/'/g, "\\'").replace(/\n/g, "\\n")
+    // Generate Markdown content, then write to a temp file to avoid escaping issues
+    const mdContent = generateMarkdownFallback(content)
+    const tmpDir = os.tmpdir()
+    const mdTmpPath = path.join(tmpDir, `ea_md2pdf_${Date.now()}.md`)
+    await fsp.writeFile(mdTmpPath, mdContent, 'utf-8')
 
-    const script = `# -*- coding: utf-8 -*-
-import sys
-try:
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
-    from reportlab.pdfbase import pdfmetrics
-    from reportlab.pdfbase.ttfonts import TTFont
-    from reportlab.lib.units import inch
-except ImportError:
-    print("NEED_INSTALL:reportlab", file=sys.stderr)
-    sys.exit(2)
-
-def main():
-    doc = SimpleDocTemplate(r'${resolved.replace(/\\/g, '\\\\')}', pagesize=A4)
-    styles = getSampleStyleSheet()
-    story = []
-
-    # Try to register Chinese font
-    try:
-        import os
-        font_path = os.path.join(os.environ.get('WINDIR', 'C:\\\\Windows'), 'Fonts', 'msyh.ttc')
-        if os.path.exists(font_path):
-            pdfmetrics.registerFont(TTFont('MSYH', font_path, subfontIndex=0))
-            styles.add(ParagraphStyle(name='Chinese', fontName='MSYH', fontSize=12, leading=18))
-            styles.add(ParagraphStyle(name='ChineseTitle', fontName='MSYH', fontSize=24, leading=30, spaceAfter=20))
-        else:
-            styles.add(ParagraphStyle(name='Chinese', parent=styles['Normal']))
-            styles.add(ParagraphStyle(name='ChineseTitle', parent=styles['Title']))
-    except:
-        styles.add(ParagraphStyle(name='Chinese', parent=styles['Normal']))
-        styles.add(ParagraphStyle(name='ChineseTitle', parent=styles['Title']))
-
-    story.append(Paragraph('${title}', styles['ChineseTitle']))
-    story.append(Spacer(1, 0.3*inch))
-
-    content_lines = '${mdContent}'.split('\\n')
-    for line in content_lines:
-        if line.strip():
-            story.append(Paragraph(line, styles['Chinese']))
-            story.append(Spacer(1, 0.1*inch))
-
-    doc.build(story)
-    print(f"SUCCESS:{r'${resolved.replace(/\\/g, '\\\\')}' }")
-
-if __name__ == '__main__':
-    main()
-`
+    const script = generateMarkdownToPdfScript(resolved, mdTmpPath, content.title || '文档')
 
     const scriptPath = await writeTempScript(script)
     try {
       let result = JSON.parse(await runCommand(`${python} "${scriptPath}"`, undefined, 60000))
 
+      // Auto-install missing dependencies
       if (result.exitCode === 2 || (result.stderr && result.stderr.includes('NEED_INSTALL'))) {
-        JSON.parse(await runCommand(`${python} -m pip install reportlab`, undefined, 120000))
+        const libs = ['markdown', 'xhtml2pdf']
+        for (const lib of libs) {
+          await runCommand(`${python} -m pip install ${lib}`, undefined, 120000)
+        }
         result = JSON.parse(await runCommand(`${python} "${scriptPath}"`, undefined, 60000))
       }
 
       await cleanupScript(scriptPath)
+      try { await fsp.unlink(mdTmpPath) } catch { /* ignore */ }
 
       if (result.exitCode === 0) {
         const stat = await fsp.stat(resolved)
@@ -501,6 +600,7 @@ if __name__ == '__main__':
     } catch { /* fallthrough to markdown fallback */ }
 
     await cleanupScript(scriptPath)
+    try { await fsp.unlink(mdTmpPath) } catch { /* ignore */ }
     const mdPath = resolved.replace(/\.pdf$/i, '.md')
     const md = generateMarkdownFallback(content)
     const writeResult = await writeFile(mdPath, md)

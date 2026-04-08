@@ -8,6 +8,7 @@ import { searchNative } from './everythingSearch'
 import { webSearch, webReader, isWebSearchAvailable } from './webSearch'
 import { readFile, writeFile, editFile, listDirectory, analyzeData } from './fileTools'
 import { runCommand } from './commandRunner'
+import { createDocument } from './documentGenerator'
 import { fileManage, openApplication, openFile, desktopControl } from './fileManager'
 import { mcpService } from './mcpService'
 import { lookupCity } from './cityLookup'
@@ -83,6 +84,7 @@ delegate_task 使用方法：
 - open_application：打开应用程序
 - open_file：打开文件
 - desktop_control：桌面控制
+- create_document：创建文档（PDF/Word/Excel/PPT/Markdown），PDF 支持完整的 Markdown 渲染
 
 回复策略：
 - 纯知识问答（不需要操作）：直接回答，无需委派。
@@ -399,6 +401,56 @@ export function buildTools() {
     },
   })
 
+  // ==================== Document Generator ====================
+  tools.push({
+    type: 'function' as const,
+    function: {
+      name: 'create_document',
+      description: '创建文档文件。支持生成 PDF、Word(.docx)、Excel(.xlsx)、PPT(.pptx)、Markdown(.md) 格式。PDF 支持完整的 Markdown 渲染（标题、列表、代码块、表格等）。需要 Python 环境，若不可用自动降级为 Markdown 格式。',
+      parameters: {
+        type: 'object',
+        properties: {
+          type: {
+            type: 'string',
+            enum: ['pdf', 'docx', 'xlsx', 'pptx', 'md'],
+            description: '文档类型：pdf(PDF文档), docx(Word文档), xlsx(Excel表格), pptx(PPT演示), md(Markdown)',
+          },
+          outputPath: {
+            type: 'string',
+            description: '输出文件的绝对路径，例如: "C:\\Users\\user\\Documents\\report.pdf"',
+          },
+          title: {
+            type: 'string',
+            description: '文档标题',
+          },
+          raw_content: {
+            type: 'string',
+            description: '文档的原始内容（Markdown 格式）。生成 PDF 时会完整解析 Markdown 语法。',
+          },
+          sections: {
+            type: 'array',
+            description: '文档的结构化章节（可选，用于 Word/PDF）。每个章节包含 heading（标题）、content（内容）、level（标题级别）。',
+            items: {
+              type: 'object',
+              properties: {
+                heading: { type: 'string', description: '章节标题' },
+                content: { type: 'string', description: '章节内容' },
+                level: { type: 'number', description: '标题级别 1-6，默认 2' },
+              },
+              required: ['content'],
+            },
+          },
+          data: {
+            type: 'array',
+            description: '表格数据（用于 Excel）。数组中每个对象代表一行，键为列名。',
+            items: { type: 'object' },
+          },
+        },
+        required: ['type', 'outputPath'],
+      },
+    },
+  })
+
   // ==================== City Lookup (for weather MCP) ====================
   tools.push({
     type: 'function' as const,
@@ -668,6 +720,14 @@ export async function executeTool(name: string, argsJson: string): Promise<strin
       const args = JSON.parse(argsJson)
       console.log('[Tool] open_application:', args.name)
       const result = await openApplication(args.name || '')
+      // If the app requires admin, inject a clear hint for the AI to relay to the user
+      try {
+        const parsed = JSON.parse(result)
+        if (parsed.requiresAdmin) {
+          parsed._hint = '【重要提示】此程序需要管理员权限。系统已弹出 UAC（用户账户控制）对话框，请提醒用户查看任务栏中闪烁的盾牌图标并点击确认。'
+          return JSON.stringify(parsed)
+        }
+      } catch { /* return original result */ }
       return result
     } catch (err: any) {
       console.error('[Tool] open_application error:', err)
@@ -720,6 +780,29 @@ export async function executeTool(name: string, argsJson: string): Promise<strin
       return result
     } catch (err: any) {
       console.error('[Tool] city_lookup error:', err)
+      return JSON.stringify({ error: err.message })
+    }
+  }
+
+  // ==================== Document Generator ====================
+  if (name === 'create_document') {
+    try {
+      const args = JSON.parse(argsJson)
+      console.log('[Tool] create_document:', args.type, args.outputPath)
+      const result = await createDocument(
+        args.type || 'md',
+        args.outputPath || '',
+        {
+          title: args.title,
+          sections: args.sections,
+          data: args.data,
+          raw_content: args.raw_content,
+        },
+      )
+      console.log('[Tool] create_document result:', result)
+      return result
+    } catch (err: any) {
+      console.error('[Tool] create_document error:', err)
       return JSON.stringify({ error: err.message })
     }
   }
@@ -1189,6 +1272,10 @@ export function abortChatRequest(requestId: string): boolean {
   if (controller) {
     controller.abort()
     activeRequests.delete(requestId)
+    // Also abort any running SubAgent to stop delegated tasks immediately
+    if (_subAgentService) {
+      _subAgentService.abortCurrent()
+    }
     return true
   }
   return false
