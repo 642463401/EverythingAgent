@@ -229,6 +229,10 @@ import sys
 try:
     import markdown
     from xhtml2pdf import pisa
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    from reportlab.lib.fonts import addMapping
+    from xhtml2pdf.default import DEFAULT_FONT
 except ImportError:
     print("NEED_INSTALL:markdown,xhtml2pdf", file=sys.stderr)
     sys.exit(2)
@@ -250,23 +254,31 @@ def main():
         'attr_list',
     ])
 
-    # Detect Chinese font
-    font_face = ''
+    # Register Chinese font — xhtml2pdf needs THREE steps:
+    # 1. registerFont (ReportLab)  2. addMapping  3. DEFAULT_FONT map
     font_family = 'Helvetica, Arial, sans-serif'
-    windir = os.environ.get('WINDIR', 'C:\\\\Windows')
-    msyh_path = os.path.join(windir, 'Fonts', 'msyh.ttc')
-    if os.path.exists(msyh_path):
-        safe_font_path = msyh_path.replace('\\\\', '/')
-        font_face = """
-        @font-face {{
-            font-family: 'MSYH';
-            src: url('file:///{font_path}');
-        }}
-        """.format(font_path=safe_font_path)
-        font_family = "MSYH, Helvetica, Arial, sans-serif"
+    windir = os.environ.get('WINDIR', r'C:\\Windows')
+    font_candidates = [
+        ('MSYH', 'msyh', os.path.join(windir, 'Fonts', 'msyh.ttc')),
+        ('MSYH', 'msyh', os.path.join(windir, 'Fonts', 'msyh.ttf')),
+        ('SimSun', 'simsun', os.path.join(windir, 'Fonts', 'simsun.ttc')),
+        ('SimHei', 'simhei', os.path.join(windir, 'Fonts', 'simhei.ttf')),
+    ]
+    for rl_name, css_name, font_path in font_candidates:
+        if os.path.exists(font_path):
+            try:
+                pdfmetrics.registerFont(TTFont(rl_name, font_path, subfontIndex=0))
+                addMapping(css_name, 0, 0, rl_name)
+                addMapping(css_name, 1, 0, rl_name)
+                addMapping(css_name, 0, 1, rl_name)
+                addMapping(css_name, 1, 1, rl_name)
+                DEFAULT_FONT[css_name] = rl_name
+                font_family = '{css}, Helvetica, Arial, sans-serif'.format(css=css_name)
+                break
+            except Exception:
+                continue
 
-    # Build complete HTML — use string concatenation to avoid % formatting issues
-    # (html_body may contain % characters from user content)
+    # Build CSS — use .format() with doubled braces for literal CSS braces
     css = """
 body {{
     font-family: {font};
@@ -328,7 +340,7 @@ img {{ max-width: 100%; }}
 """.format(font=font_family)
 
     html = '<!DOCTYPE html><html><head><meta charset="utf-8"><style>'
-    html += font_face + css
+    html += css
     html += '</style></head><body>'
     html += html_body
     html += '</body></html>'
