@@ -1,6 +1,6 @@
 import React, { useCallback, useRef, useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Search, Settings, Loader2, Send, HardDrive, GripHorizontal, Plus, History, Trash2, X } from 'lucide-react'
+import { Search, Settings, Loader2, Send, HardDrive, GripHorizontal, Plus, History, Trash2, X, Square } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { ChatWindow } from './ChatWindow'
 import { SearchResults } from './SearchResults'
@@ -263,6 +263,21 @@ export function SpotlightBar({ onOpenSettings, hidden }: SpotlightBarProps) {
     try { await window.electronAPI?.chatSend(requestId, apiMessages) } catch { /* handled by events */ }
   }, [messages, isLoading])
 
+  const handleStop = useCallback(() => {
+    if (!isLoading || !currentRequestId.current) return
+    window.electronAPI?.chatAbort(currentRequestId.current)
+    currentRequestId.current = null
+    setIsLoading(false)
+    // Append a note to the last message indicating it was stopped
+    setMessages((prev) => {
+      const last = prev[prev.length - 1]
+      if (last?.role === 'assistant') {
+        return [...prev.slice(0, -1), { ...last, content: last.content + '\n\n---\n*已停止生成*' }]
+      }
+      return prev
+    })
+  }, [isLoading])
+
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (isInSearchMode && searchResults.length > 0) {
       if (e.key === 'ArrowDown') { e.preventDefault(); setSelectedIndex((p) => Math.min(p + 1, searchResults.length - 1)); return }
@@ -313,7 +328,11 @@ export function SpotlightBar({ onOpenSettings, hidden }: SpotlightBarProps) {
             </form>
 
             <div className="flex items-center gap-0.5 pr-2">
-              {query.trim() && !isInSearchMode && (
+              {isLoading ? (
+                <button type="button" onClick={handleStop} className="flex items-center justify-center w-8 h-8 rounded-lg text-red-400 hover:text-red-300 hover:bg-red-500/10 transition-colors" title="停止生成">
+                  <Square className="w-3.5 h-3.5 fill-current" />
+                </button>
+              ) : query.trim() && !isInSearchMode && (
                 <button type="button" onClick={handleSubmit as any} className="flex items-center justify-center w-8 h-8 rounded-lg text-muted-foreground hover:text-foreground hover:bg-white/[0.06] transition-colors" title="发送">
                   <Send className="w-4 h-4" />
                 </button>

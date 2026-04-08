@@ -7,7 +7,7 @@
 import fsp from 'node:fs/promises'
 import fs from 'node:fs'
 import path from 'node:path'
-import { spawn } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { app, shell } from 'electron'
 
 // ==================== Safety ====================
@@ -177,6 +177,55 @@ export async function fileManage(
   }
 }
 
+// ==================== Application Launcher Helpers ====================
+
+/**
+ * Resolve a command name to its full executable path using `where`.
+ * Returns null if the executable cannot be found.
+ */
+function resolveExePath(command: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    execFile('where', [command], { windowsHide: true }, (err, stdout) => {
+      if (err || !stdout.trim()) {
+        // Also try with .exe suffix
+        if (!command.endsWith('.exe')) {
+          execFile('where', [`${command}.exe`], { windowsHide: true }, (err2, stdout2) => {
+            if (err2 || !stdout2.trim()) return resolve(null)
+            resolve(stdout2.trim().split(/\r?\n/)[0])
+          })
+        } else {
+          resolve(null)
+        }
+        return
+      }
+      // `where` may return multiple paths, take the first
+      resolve(stdout.trim().split(/\r?\n/)[0])
+    })
+  })
+}
+
+/**
+ * Check if an executable requires administrator privileges by reading its
+ * embedded manifest. Searches the last portion of the file for the XML
+ * manifest containing `requireAdministrator` or `highestAvailable`.
+ * Returns false on any error (safe default).
+ */
+async function checkRequiresAdmin(exePath: string): Promise<boolean> {
+  try {
+    const stat = await fsp.stat(exePath)
+    // Read the last 64KB (manifest is near the end of PE files)
+    const readSize = Math.min(stat.size, 64 * 1024)
+    const fd = await fsp.open(exePath, 'r')
+    const buf = Buffer.alloc(readSize)
+    await fd.read(buf, 0, readSize, Math.max(0, stat.size - readSize))
+    await fd.close()
+    const text = buf.toString('latin1')
+    return text.includes('requireAdministrator') || text.includes('highestAvailable')
+  } catch {
+    return false
+  }
+}
+
 // ==================== Application Launcher ====================
 
 /**
@@ -298,14 +347,20 @@ export async function openApplication(appName: string): Promise<string> {
 
     if (results.length > 0) {
       const exePath = results[0].fullPath
+      const needsAdmin = await checkRequiresAdmin(exePath)
       const errorStr = await shell.openPath(exePath)
       if (!errorStr) {
-        return JSON.stringify({
+        const result: Record<string, any> = {
           success: true,
           application: name,
           path: exePath,
           message: `已打开: ${name} (${exePath})`,
-        })
+        }
+        if (needsAdmin) {
+          result.requiresAdmin = true
+          result.message = `已打开: ${name}（此程序需要管理员权限，请在 UAC 弹窗中确认）`
+        }
+        return JSON.stringify(result)
       }
     }
   } catch { /* ignore search errors */ }
@@ -320,8 +375,7 @@ async function launchApp(command: string, displayName: string): Promise<string> 
   // For ms-settings: and similar URI schemes
   if (command.includes(':')) {
     try {
-      const errorStr = await shell.openExternal(command)
-      // shell.openExternal returns void on success for Electron
+      await shell.openExternal(command)
       return JSON.stringify({
         success: true,
         application: displayName,
@@ -332,28 +386,39 @@ async function launchApp(command: string, displayName: string): Promise<string> 
     }
   }
 
-  return new Promise<string>((resolve) => {
-    const child = spawn('cmd.exe', ['/c', 'start', '', command], {
-      windowsHide: true,
-      detached: true,
-      stdio: 'ignore',
-    })
-
-    child.unref()
-
-    child.on('error', (err) => {
-      resolve(JSON.stringify({ error: `启动失败: ${err.message}` }))
-    })
-
-    // Give it a moment to fail or succeed
-    setTimeout(() => {
-      resolve(JSON.stringify({
+  // Resolve to absolute exe path so shell.openPath (ShellExecuteEx) handles UAC properly
+  const exePath = await resolveExePath(command)
+  if (exePath) {
+    const needsAdmin = await checkRequiresAdmin(exePath)
+    const errorStr = await shell.openPath(exePath)
+    if (!errorStr) {
+      const result: Record<string, any> = {
         success: true,
         application: displayName,
+        path: exePath,
         message: `已打开: ${displayName}`,
-      }))
-    }, 1000)
-  })
+      }
+      if (needsAdmin) {
+        result.requiresAdmin = true
+        result.message = `已打开: ${displayName}（此程序需要管理员权限，请在 UAC 弹窗中确认）`
+      }
+      return JSON.stringify(result)
+    }
+    return JSON.stringify({ error: `启动失败: ${errorStr}` })
+  }
+
+  // Fallback: try shell.openPath directly with the command name
+  // (works for some apps registered in App Paths registry)
+  const fallbackError = await shell.openPath(command)
+  if (!fallbackError) {
+    return JSON.stringify({
+      success: true,
+      application: displayName,
+      message: `已打开: ${displayName}`,
+    })
+  }
+
+  return JSON.stringify({ error: `未找到可执行文件: ${command}` })
 }
 
 // ==================== File Opener ====================
@@ -377,28 +442,43 @@ export async function openFile(filePath: string, application?: string): Promise<
   }
 
   if (application) {
-    // Open with specific application
-    return new Promise<string>((resolve) => {
-      const child = spawn('cmd.exe', ['/c', 'start', '', application, resolved], {
-        windowsHide: true,
-        detached: true,
-        stdio: 'ignore',
-      })
-      child.unref()
+    // Open with specific application via resolved exe path
+    const appCommand = APP_MAP[application.toLowerCase()] || application
+    const appExePath = await resolveExePath(appCommand)
 
-      child.on('error', (err) => {
-        resolve(JSON.stringify({ error: `用 ${application} 打开失败: ${err.message}` }))
+    if (appExePath) {
+      // Use spawn with the resolved path — not detached, so UAC shows in foreground
+      return new Promise<string>((resolve) => {
+        const child = spawn(appExePath, [resolved], {
+          windowsHide: true,
+          detached: true,
+          stdio: 'ignore',
+        })
+        child.unref()
+        child.on('error', (err) => {
+          resolve(JSON.stringify({ error: `用 ${application} 打开失败: ${err.message}` }))
+        })
+        setTimeout(() => {
+          resolve(JSON.stringify({
+            success: true,
+            path: resolved,
+            application,
+            message: `已用 ${application} 打开: ${path.basename(resolved)}`,
+          }))
+        }, 1000)
       })
+    }
 
-      setTimeout(() => {
-        resolve(JSON.stringify({
-          success: true,
-          path: resolved,
-          application,
-          message: `已用 ${application} 打开: ${path.basename(resolved)}`,
-        }))
-      }, 1000)
-    })
+    // Fallback: let shell decide
+    const errorStr = await shell.openPath(resolved)
+    if (!errorStr) {
+      return JSON.stringify({
+        success: true,
+        path: resolved,
+        message: `已打开: ${path.basename(resolved)}`,
+      })
+    }
+    return JSON.stringify({ error: `用 ${application} 打开失败: ${errorStr}` })
   }
 
   // Open with default application

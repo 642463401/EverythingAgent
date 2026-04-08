@@ -41,7 +41,7 @@ const SUBAGENT_SYSTEM_PROMPT = `你是一个任务执行助手。你唯一的职
 8. 修改文件前必须先用 read_file 读取文件当前内容，确保 edit_file 的 old_string 与实际内容匹配。
 9. 你的输出不会直接显示给用户，只会作为结果返回给主Agent。请确保摘要信息完整准确。
 
-你可以使用的工具包括：文件读写（read_file/write_file/edit_file）、目录浏览（list_directory）、数据分析（analyze_data）、命令执行（run_command）、文件管理（file_manage）、打开应用（open_application/open_file）、桌面控制（desktop_control）等。
+你可以使用的工具包括：文件读写（read_file/write_file/edit_file）、目录浏览（list_directory）、数据分析（analyze_data）、命令执行（run_command）、文件管理（file_manage）、打开应用（open_application/open_file）、桌面控制（desktop_control）、创建文档（create_document，支持 PDF/Word/Excel/PPT/Markdown，PDF 支持完整的 Markdown 渲染）等。
 
 当前时间: {timestamp}`
 
@@ -125,6 +125,20 @@ ${lines.join('\n')}`
 // ==================== SubAgent Service ====================
 
 class SubAgentService {
+  private activeController: AbortController | null = null
+
+  /**
+   * Abort the currently running SubAgent (if any).
+   * Called when the user stops AI generation from the UI.
+   */
+  abortCurrent(): void {
+    if (this.activeController) {
+      console.log('[SubAgent] Aborting current task')
+      this.activeController.abort()
+      this.activeController = null
+    }
+  }
+
   /**
    * Execute a task in an isolated SubAgent context.
    * The SubAgent runs silently — it does NOT stream output to the user.
@@ -164,6 +178,7 @@ class SubAgentService {
     ]
 
     const controller = new AbortController()
+    this.activeController = controller
     let finalContent = ''
 
     try {
@@ -191,7 +206,7 @@ class SubAgentService {
         iterationsUsed: result.iterationsUsed,
       }
     } catch (err: any) {
-      const errorMsg = err.name === 'AbortError' ? '任务被中断' : err.message
+      const errorMsg = err.name === 'AbortError' ? '任务被用户中断' : err.message
       console.error(`[SubAgent ${agentId}] Task failed: ${errorMsg}`)
 
       return {
@@ -200,6 +215,10 @@ class SubAgentService {
         summary: finalContent,
         filesAffected: extractFilesAffected(messages),
         error: errorMsg,
+      }
+    } finally {
+      if (this.activeController === controller) {
+        this.activeController = null
       }
     }
     // Context is released here — messages array is garbage collected
