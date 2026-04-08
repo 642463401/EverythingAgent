@@ -43,6 +43,10 @@ const SUBAGENT_SYSTEM_PROMPT = `你是一个任务执行助手。你唯一的职
 
 你可以使用的工具包括：文件读写（read_file/write_file/edit_file）、目录浏览（list_directory）、数据分析（analyze_data）、命令执行（run_command）、文件管理（file_manage）、打开应用（open_application/open_file）、桌面控制（desktop_control）、创建文档（create_document，支持 PDF/Word/Excel/PPT/Markdown，PDF 支持完整的 Markdown 渲染）等。
 
+重要约束：
+- 生成文档（PDF/Word/Excel/PPT）必须使用 create_document 工具，禁止通过 run_command 执行 Python 脚本来生成文档。create_document 内置了正确的字体配置和环境依赖，run_command 不具备这些条件。
+- 生成 PDF 时，将完整的 Markdown 内容传入 create_document 的 raw_content 参数即可，工具会自动完成 Markdown → HTML → PDF 的转换和中文字体渲染。
+
 当前时间: {timestamp}`
 
 // ==================== Helper Functions ====================

@@ -10,6 +10,7 @@ import os from 'node:os'
 import { app } from 'electron'
 import { runCommand } from './commandRunner'
 import { writeFile } from './fileTools'
+import { getBundledPythonDir } from './pythonHelper'
 
 // ==================== Types ====================
 
@@ -48,7 +49,20 @@ function safeResolve(filePath: string): string {
 }
 
 async function checkPython(): Promise<string | null> {
-  // Try python first, then python3
+  // 1. Prefer bundled Python (relative to install dir via process.resourcesPath, has all dependencies)
+  const bundledDir = getBundledPythonDir()
+  if (bundledDir) {
+    const bundledExe = path.join(bundledDir, 'python.exe')
+    try {
+      const stat = await fsp.stat(bundledExe)
+      if (stat.isFile()) {
+        console.log('[documentGenerator] Using bundled Python:', bundledExe)
+        return bundledExe
+      }
+    } catch { /* not found, fall through */ }
+  }
+
+  // 2. Fallback to system Python via runCommand (PATH injection still applies)
   for (const cmd of ['python', 'python3']) {
     const result = JSON.parse(await runCommand(`${cmd} --version`))
     if (result.exitCode === 0 && result.stdout?.includes('Python')) {
@@ -478,12 +492,12 @@ export async function createDocument(
 
     try {
       // Try running the script
-      let result = JSON.parse(await runCommand(`${python} "${scriptPath}"`, undefined, 60000))
+      let result = JSON.parse(await runCommand(`"${python}" "${scriptPath}"`, undefined, 60000))
 
       // If library not installed, try installing it
       if (result.exitCode === 2 || (result.stderr && result.stderr.includes('NEED_INSTALL'))) {
         console.log(`[documentGenerator] Installing ${requiredLib}...`)
-        const installResult = JSON.parse(await runCommand(`${python} -m pip install ${requiredLib}`, undefined, 120000))
+        const installResult = JSON.parse(await runCommand(`"${python}" -m pip install ${requiredLib}`, undefined, 120000))
 
         if (installResult.exitCode !== 0) {
           // pip install failed - fallback to Markdown
@@ -501,7 +515,7 @@ export async function createDocument(
         }
 
         // Retry after install
-        result = JSON.parse(await runCommand(`${python} "${scriptPath}"`, undefined, 60000))
+        result = JSON.parse(await runCommand(`"${python}" "${scriptPath}"`, undefined, 60000))
       }
 
       await cleanupScript(scriptPath)
@@ -579,19 +593,19 @@ export async function createDocument(
     let lastError = ''
 
     try {
-      let result = JSON.parse(await runCommand(`${python} "${scriptPath}"`, undefined, 60000))
+      let result = JSON.parse(await runCommand(`"${python}" "${scriptPath}"`, undefined, 60000))
 
       // Auto-install missing dependencies
       if (result.exitCode === 2 || (result.stderr && result.stderr.includes('NEED_INSTALL'))) {
         console.log('[documentGenerator] Installing markdown + xhtml2pdf...')
         const libs = ['markdown', 'xhtml2pdf']
         for (const lib of libs) {
-          const installResult = JSON.parse(await runCommand(`${python} -m pip install ${lib}`, undefined, 120000))
+          const installResult = JSON.parse(await runCommand(`"${python}" -m pip install ${lib}`, undefined, 120000))
           if (installResult.exitCode !== 0) {
             lastError = `安装 ${lib} 失败: ${installResult.stderr || installResult.stdout}`
           }
         }
-        result = JSON.parse(await runCommand(`${python} "${scriptPath}"`, undefined, 60000))
+        result = JSON.parse(await runCommand(`"${python}" "${scriptPath}"`, undefined, 60000))
       }
 
       await cleanupScript(scriptPath)
